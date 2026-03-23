@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str
     secret_key: str = "chave_padrao_para_desenvolvimento"
+    gemini_api_key: str
 
     class Config:
         env_file = ".env"

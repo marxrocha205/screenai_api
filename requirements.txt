@@ -12,3 +12,4 @@ PyJWT
 email-validator
 python-multipart
 websockets
+google-generativeai
