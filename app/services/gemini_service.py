@@ -12,6 +12,7 @@ from typing import List, Optional, Union
 
 from app.core.config import settings
 from app.core.logger import setup_logger
+from app.services.redis_service import redis_service
 
 logger = setup_logger(__name__)
 
@@ -56,58 +57,55 @@ class GeminiService:
 
     async def generate_response(self, user_id: int, user_message: str, image_bytes: Optional[bytes] = None) -> str:
         """
-        Envia mensagem e imagem opcional para a IA, mantendo a linha de raciocínio.
-        
-        Args:
-            user_id (int): ID do usuário para controle futuro de histórico.
-            user_message (str): Texto enviado pelo usuário.
-            image_bytes (bytes): Dados binários da captura de tela.
-            
-        Returns:
-            str: Resposta conversacional do ScreenAI.
+        Envia mensagem multimodal para a IA, injetando o histórico salvo no Redis.
         """
-        logger.info(f"Processando requisição multimodal para usuário {user_id}. Tem imagem? {image_bytes is not None}")
+        logger.info(f"Processando requisição multimodal para usuário {user_id}.")
         
-        # Lista de conteúdo para o prompt multimodal
-        # O Gemini aceita uma lista misturando strings e imagens PIL
+        # 1. Recupera o histórico do Redis
+        history = await redis_service.get_history(user_id)
+        
+        # 2. Inicia uma sessão de chat com a SDK do Gemini passando o histórico anterior
+        chat_session = self.model.start_chat(history=history)
+        
+        # 3. Prepara a nova mensagem multimodal (Mensagem Atual)
         content_payload: List[Union[str, Image.Image]] = []
         
-        # Adiciona a imagem ao payload se ela existir
         if image_bytes:
             try:
-                # Converte bytes em objeto Image PIL
                 img = Image.open(BytesIO(image_bytes))
                 content_payload.append(img)
-                logger.debug("Imagem decodificada e adicionada ao payload.")
             except Exception as e:
-                logger.error(f"Erro ao processar bytes da imagem para usuário {user_id}: {str(e)}")
+                logger.error(f"Erro ao processar imagem para usuário {user_id}: {str(e)}")
                 return "Tive um problema técnico ao tentar ver sua tela. Consegue me mostrar de novo?"
 
-        # Adiciona a mensagem de texto
         if user_message:
             content_payload.append(user_message)
-        
-        # Se não houver mensagem nem imagem, nada a fazer
-        if not content_payload:
-            return "Estou te ouvindo. Como posso ajudar com seu computador hoje?"
+        elif not image_bytes:
+             return "Estou te ouvindo. Como posso ajudar?"
 
         try:
-            # CHAMADA À IA
-            # TODO: Na V2 implementar chat.send_message() para manter histórico em memória
-            # Por enquanto usando generate_content para validação multimodal
-            response = self.model.generate_content(content_payload)
+            # 4. Envia a nova mensagem usando o objeto de chat (que já contém o contexto)
+            response = chat_session.send_message(content_payload)
             
             if response.text:
-                logger.debug(f"Resposta gerada pelo ScreenAI: {response.text[:50]}...")
-                # Retorna estritamente o texto conforme Protocolo de Saída
-                return response.text
+                resposta_final = response.text
+                
+                # 5. Salva a interação atual no Redis para a próxima rodada
+                # Usamos send_message de forma assíncrona/background para não travar a resposta
+                await redis_service.save_interaction(
+                    user_id=user_id, 
+                    user_message=user_message, 
+                    model_response=resposta_final
+                )
+                
+                return resposta_final
             else:
-                logger.warning("IA retornou resposta vazia (provavelmente bloqueio de conteúdo).")
                 return "Ops, não consegui processar isso. Vamos tentar o próximo passo?"
                 
         except Exception as e:
             logger.error(f"Erro crítico na comunicação com Gemini para usuário {user_id}: {str(e)}")
             return "Estou com uma instabilidade técnica agora. Mas não vamos desistir, me fala de novo o que você precisa."
-
 # Instância Singleton do serviço
 gemini_service = GeminiService()
+
+
