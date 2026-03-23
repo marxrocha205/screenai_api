@@ -35,3 +35,16 @@ A API criará as tabelas automaticamente na primeira execução graças ao `Base
 ## Registro e Commit
 
 O código agora possui memória. A "Linha de Raciocínio do Cliente", regra fundamental do seu prompt, agora é tecnicamente possível, pois o Gemini sabe exatamente em qual etapa do "passo a passo" o usuário está.
+
+## Arquitetura de Comunicação (Rotas)
+
+O sistema possui duas vias de comunicação com a Inteligência Artificial, projetadas para escalabilidade:
+
+### 1. Comunicação Tempo Real (WebSocket)
+- **Rota:** `ws://host/ws/assistente?token=...`
+- **Uso:** Ideal para o núcleo do ScreenAI. O usuário transmite voz/texto e prints de tela compactados continuamente. O servidor responde instantaneamente mantendo o canal aberto.
+
+### 2. Comunicação Tradicional / Uploads Pesados (REST)
+- **Rota:** `POST /api/chat/message?token=...`
+- **Uso:** Rota HTTP padrão (Multipart/Form-Data). Ideal para quando o usuário precisa enviar um áudio longo gravado, um documento PDF de várias páginas ou imagens em alta resolução. A API gerencia o upload para a nuvem do Google e acopla a análise ao histórico do usuário.
+- **Parâmetros:** Aceita os campos `text` (String) e `file` (Arquivo).
