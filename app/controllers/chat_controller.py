@@ -1,0 +1,95 @@
+"""
+Controlador de rotas REST para Chat e Uploads Multimodais.
+Permite o envio de texto, áudio, imagens pesadas e documentos PDF via HTTP POST,
+integrando-se ao mesmo histórico de conversa (Redis) utilizado pelo WebSocket.
+"""
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from typing import Optional
+
+from app.core.database import get_db
+from app.core.logger import setup_logger
+from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
+from app.services.gemini_service import gemini_service
+
+logger = setup_logger(__name__)
+router = APIRouter(prefix="/api/chat", tags=["Chat Multimodal REST"])
+
+# Rota protegida por autenticação (Passa o token no cabeçalho ou na query)
+@router.post("/message")
+async def send_multimodal_message(
+    token: str,
+    text: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None)
+):
+    """
+    Recebe uma mensagem de texto e/ou um arquivo (Áudio, PDF, Imagem).
+    Processa e retorna a resposta da IA.
+    """
+    # Valida o usuário
+    user = verify_ws_token(token)
+    logger.info(f"Requisição HTTP Multimodal recebida do usuário {user.id}")
+
+    if not text and not file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="É necessário enviar texto ou um arquivo."
+        )
+
+    uploaded_files_refs = []
+
+    # Processamento do arquivo (se existir)
+    if file:
+        try:
+            # Lê os bytes do arquivo enviado pelo usuário
+            file_bytes = await file.read()
+            mime_type = file.content_type
+            filename = file.filename
+            
+            logger.info(f"Processando arquivo: {filename} ({mime_type})")
+            
+            # Validação básica de segurança para tipos permitidos
+            tipos_permitidos = [
+                "application/pdf", 
+                "audio/mpeg", 
+                "audio/wav", 
+                "audio/ogg", 
+                "image/jpeg", 
+                "image/png"
+            ]
+            
+            if mime_type not in tipos_permitidos:
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail=f"Tipo de arquivo não suportado. Envie PDF, Imagens ou Áudio."
+                )
+
+            # Faz o upload para a infraestrutura do Gemini
+            gemini_file_ref = await gemini_service.upload_file_to_gemini(
+                file_bytes=file_bytes, 
+                mime_type=mime_type, 
+                file_name=filename
+            )
+            uploaded_files_refs.append(gemini_file_ref)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Erro ao processar upload HTTP: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro ao processar o arquivo enviado."
+            )
+
+    # Envia os dados (texto e referências de arquivos) para a IA
+    resposta_ia = await gemini_service.generate_response(
+        user_id=user.id,
+        user_message=text or "",
+        uploaded_files=uploaded_files_refs
+    )
+
+    # Retorna o JSON com a resposta da IA (A API REST retorna JSON padrão, não precisa gerenciar websocket aqui)
+    return {
+        "status": "success",
+        "user_id": user.id,
+        "response": resposta_ia
+    }
