@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Teste WebSocket Assistente</title>
+</head>
+<body>
+    <h2>Console de Teste WebSocket</h2>
+    <label>Insira seu JWT Token (Obtido na rota /auth/login):</label><br>
+    <input type="text" id="tokenInput" style="width: 300px;"><br><br>
+    
+    <button onclick="conectar()">1. Conectar</button>
+    <button onclick="enviarMensagem()">2. Enviar Teste</button>
+    <button onclick="desconectar()">3. Desconectar</button>
+    
+    <ul id="mensagens"></ul>
+
+    <script>
+        let ws = null;
+
+        function conectar() {
+            const token = document.getElementById("tokenInput").value;
+            if (!token) return alert("Insira o token primeiro!");
+            
+            ws = new WebSocket(`ws://localhost:8000/ws/assistente?token=${token}`);
+            
+            ws.onopen = () => document.getElementById('mensagens').innerHTML += "<li>✅ Conectado ao Servidor</li>";
+            ws.onclose = () => document.getElementById('mensagens').innerHTML += "<li>❌ Desconectado</li>";
+            ws.onmessage = (event) => {
+                const dados = JSON.parse(event.data);
+                document.getElementById('mensagens').innerHTML += `<li>🤖 Resposta: ${dados.message}</li>`;
+            };
+        }
+
+        function enviarMensagem() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return alert("Conecte primeiro!");
+            const payload = { type: "text", content: "Olá Servidor!" };
+            ws.send(JSON.stringify(payload));
+        }
+
+        function desconectar() {
+            if (ws) ws.close();
+        }
+    </script>
+</body>
+</html>

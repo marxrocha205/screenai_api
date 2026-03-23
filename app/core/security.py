@@ -6,6 +6,10 @@ from passlib.context import CryptContext
 import jwt
 from app.core.config import settings
 from app.core.logger import setup_logger
+from fastapi import WebSocketException, status
+from sqlalchemy.orm import Session
+from app.models.user_model import User
+from app.core.database import SessionLocal
 
 logger = setup_logger(__name__)
 
@@ -43,3 +47,33 @@ def create_access_token(data: dict) -> str:
     except Exception as e:
         logger.error(f"Erro ao gerar token JWT: {str(e)}")
         raise
+
+def verify_ws_token(token: str) -> User:
+    """
+    Verifica o token JWT passado via WebSocket (Query Params).
+    Retorna o usuário se válido, caso contrário levanta uma exceção de fechamento do WebSocket.
+    """
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            logger.warning("Token de WebSocket sem email (sub).")
+            raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+            
+        # Para WebSockets, abrimos uma sessão de BD rapidamente para validar
+        db: Session = SessionLocal()
+        user = db.query(User).filter(User.email == email).first()
+        db.close()
+        
+        if user is None:
+            logger.warning(f"Usuário não encontrado para o email: {email}")
+            raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+            
+        return user
+        
+    except jwt.ExpiredSignatureError:
+        logger.error("Token de WebSocket expirado.")
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+    except jwt.PyJWTError as e:
+        logger.error(f"Erro de validação JWT no WebSocket: {str(e)}")
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
