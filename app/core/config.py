@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     secret_key: str = "chave_padrao_para_desenvolvimento"
     gemini_api_key: str
     redis_url: str = "redis://localhost:6379/0"
+    openai_api_key: str
 
     class Config:
         env_file = ".env"

@@ -21,7 +21,7 @@ class GeminiService:
     def __init__(self):
         try:
             genai.configure(api_key=settings.gemini_api_key)
-            self.model_name = "gemini-1.5-flash"
+            self.model_name = "gemini-2.5-flash-lite"
             
             self.safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,

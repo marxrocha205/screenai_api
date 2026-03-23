@@ -1,7 +1,8 @@
 """
-Ponto de entrada principal da API FastAPI.
+Ponto de entrada principal da API ScreenAI.
 """
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.core.logger import setup_logger
 from app.controllers import auth_controller, websocket_controller, chat_controller
 
@@ -11,6 +12,15 @@ app = FastAPI(
     title="API ScreenAI",
     description="API para orquestração de áudio, texto e IA conversacional multimodal.",
     version="1.0.0"
+)
+
+# Configuração de CORS para permitir que o frontend local acesse a API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Em produção, substitua pelo domínio real do seu frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Inclusão dos Controladores (Rotas)
