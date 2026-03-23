@@ -1,0 +1,15 @@
+# Ambientes virtuais
+venv/
+env/
+
+# Arquivos de ambiente
+.env
+
+# Arquivos gerados pelo Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs
+.vscode/
+.idea/
