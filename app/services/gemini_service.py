@@ -1,11 +1,15 @@
 """
 Serviço de integração com a API do Google Gemini.
-Gerencia a inicialização do modelo, carregamento do prompt de sistema
-e formatação das requisições e respostas.
+Atualizado para suportar entradas multimodais (imagem + texto) e
+manter o histórico da conversa (Linha de Raciocínio do Cliente).
 """
 import os
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from PIL import Image
+from io import BytesIO
+from typing import List, Optional, Union
+
 from app.core.config import settings
 from app.core.logger import setup_logger
 
@@ -13,14 +17,11 @@ logger = setup_logger(__name__)
 
 class GeminiService:
     def __init__(self):
-        """Inicializa o cliente do Gemini com a chave de API segura."""
+        """Inicializa o cliente do Gemini e carrega o prompt do sistema."""
         try:
             genai.configure(api_key=settings.gemini_api_key)
-            
-            # Utilizando o modelo Flash por ser o mais rápido para respostas textuais/visuais
             self.model_name = "gemini-1.5-flash"
             
-            # Configurações de segurança para evitar bloqueios falsos positivos em suporte técnico
             self.safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -28,62 +29,85 @@ class GeminiService:
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             }
             
-            # Inicializa o modelo
+            # Carrega o prompt do sistema uma única vez na inicialização
+            self.system_instruction = self._load_system_prompt()
+            
+            # Configura o modelo com as instruções do sistema fixas
             self.model = genai.GenerativeModel(
                 model_name=self.model_name,
-                safety_settings=self.safety_settings
+                safety_settings=self.safety_settings,
+                system_instruction=self.system_instruction # Instrução nativa do Gemini 1.5
             )
-            logger.info(f"Serviço Gemini ({self.model_name}) inicializado com sucesso.")
+            logger.info(f"Serviço ScreenAI ({self.model_name}) inicializado com sucesso.")
         except Exception as e:
             logger.error(f"Falha ao inicializar o Gemini API: {str(e)}")
             raise
 
     def _load_system_prompt(self) -> str:
-        """
-        Lê o conteúdo do arquivo txt contendo as diretrizes de comportamento.
-        Lido dinamicamente para permitir atualizações no arquivo sem reiniciar o servidor.
-        """
+        """Lê o arquivo de prompt do sistema fornecido pelo usuário."""
         prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'system_prompt.txt')
         try:
             with open(prompt_path, 'r', encoding='utf-8') as file:
-                return file.read().strip()
+                content = file.read().strip()
+                return content
         except FileNotFoundError:
-            logger.warning(f"Arquivo de prompt não encontrado em {prompt_path}. Usando prompt padrão.")
-            return "Responda de forma clara e passo a passo."
+            logger.error(f"Arquivo de prompt não encontrado em {prompt_path}. Crítico.")
+            raise
 
-    async def generate_response(self, user_message: str) -> str:
+    async def generate_response(self, user_id: int, user_message: str, image_bytes: Optional[bytes] = None) -> str:
         """
-        Envia a mensagem do usuário junto com o contexto de sistema para a IA.
+        Envia mensagem e imagem opcional para a IA, mantendo a linha de raciocínio.
         
         Args:
-            user_message (str): A dúvida ou comando enviado pelo usuário.
+            user_id (int): ID do usuário para controle futuro de histórico.
+            user_message (str): Texto enviado pelo usuário.
+            image_bytes (bytes): Dados binários da captura de tela.
             
         Returns:
-            str: A resposta gerada pela IA formatada.
+            str: Resposta conversacional do ScreenAI.
         """
-        system_prompt = self._load_system_prompt()
+        logger.info(f"Processando requisição multimodal para usuário {user_id}. Tem imagem? {image_bytes is not None}")
         
-        # O Gemini 1.5 aceita instruções de sistema diretamente na construção do prompt
-        # ou estruturando o histórico. Aqui, combinamos de forma explícita para garantir a aderência.
-        full_prompt = f"DIRETRIZES DE SISTEMA:\n{system_prompt}\n\nDÚVIDA DO USUÁRIO:\n{user_message}\n\nRESPOSTA PASSO A PASSO:"
+        # Lista de conteúdo para o prompt multimodal
+        # O Gemini aceita uma lista misturando strings e imagens PIL
+        content_payload: List[Union[str, Image.Image]] = []
         
-        logger.info(f"Enviando requisição para o Gemini. Tamanho do prompt: {len(full_prompt)} caracteres.")
+        # Adiciona a imagem ao payload se ela existir
+        if image_bytes:
+            try:
+                # Converte bytes em objeto Image PIL
+                img = Image.open(BytesIO(image_bytes))
+                content_payload.append(img)
+                logger.debug("Imagem decodificada e adicionada ao payload.")
+            except Exception as e:
+                logger.error(f"Erro ao processar bytes da imagem para usuário {user_id}: {str(e)}")
+                return "Tive um problema técnico ao tentar ver sua tela. Consegue me mostrar de novo?"
+
+        # Adiciona a mensagem de texto
+        if user_message:
+            content_payload.append(user_message)
         
+        # Se não houver mensagem nem imagem, nada a fazer
+        if not content_payload:
+            return "Estou te ouvindo. Como posso ajudar com seu computador hoje?"
+
         try:
-            # Em chamadas de rede I/O bound, usamos o método síncrono da SDK do Google
-            # encapsulado para não travar o event loop do FastAPI (o FastAPI faz isso muito bem).
-            response = self.model.generate_content(full_prompt)
+            # CHAMADA À IA
+            # TODO: Na V2 implementar chat.send_message() para manter histórico em memória
+            # Por enquanto usando generate_content para validação multimodal
+            response = self.model.generate_content(content_payload)
             
             if response.text:
-                logger.debug("Resposta gerada com sucesso pelo Gemini.")
+                logger.debug(f"Resposta gerada pelo ScreenAI: {response.text[:50]}...")
+                # Retorna estritamente o texto conforme Protocolo de Saída
                 return response.text
             else:
-                logger.warning("Gemini retornou uma resposta vazia ou bloqueada.")
-                return "Houve um problema ao processar sua solicitação. Tente novamente."
+                logger.warning("IA retornou resposta vazia (provavelmente bloqueio de conteúdo).")
+                return "Ops, não consegui processar isso. Vamos tentar o próximo passo?"
                 
         except Exception as e:
-            logger.error(f"Erro ao comunicar com o Gemini: {str(e)}")
-            return "Estou enfrentando problemas técnicos na minha conexão no momento."
+            logger.error(f"Erro crítico na comunicação com Gemini para usuário {user_id}: {str(e)}")
+            return "Estou com uma instabilidade técnica agora. Mas não vamos desistir, me fala de novo o que você precisa."
 
-# Instância única do serviço (Singleton)
+# Instância Singleton do serviço
 gemini_service = GeminiService()
