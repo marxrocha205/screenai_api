@@ -31,3 +31,7 @@ A API criará as tabelas automaticamente na primeira execução graças ao `Base
 2. Acesse `http://127.0.0.1:8000/docs`, crie um usuário em `/auth/register` e faça login em `/auth/login` para obter o `access_token`.
 3. Abra o arquivo `teste_ws.html` no seu navegador.
 4. Cole o token no campo indicado, clique em "Conectar" e depois em "Enviar Teste". Você verá o eco do servidor em tempo real.
+
+## Registro e Commit
+
+O código agora possui memória. A "Linha de Raciocínio do Cliente", regra fundamental do seu prompt, agora é tecnicamente possível, pois o Gemini sabe exatamente em qual etapa do "passo a passo" o usuário está.

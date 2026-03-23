@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     database_url: str
     secret_key: str = "chave_padrao_para_desenvolvimento"
     gemini_api_key: str
+    redis_url: str = "redis://localhost:6379/0"
 
     class Config:
         env_file = ".env"
