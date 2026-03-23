@@ -12,6 +12,7 @@ from app.core.logger import setup_logger
 from app.services.gemini_service import gemini_service 
 from app.services.tts_service import tts_service
 from app.services.stt_service import stt_service
+from app.services.redis_service import redis_service # Importe o serviço do Redis
 
 
 logger = setup_logger(__name__)
@@ -27,7 +28,19 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
         while True:
             # Recebe o JSON do frontend
             data = await websocket.receive_json()
+            is_allowed = await redis_service.check_rate_limit(
+                user_id=user.id, 
+                max_requests=10, 
+                window_seconds=60
+            )
             
+            if not is_allowed:
+                logger.warning(f"Bloqueando mensagem do utilizador {user.id} via WebSocket (Rate Limit).")
+                await manager.send_personal_message({
+                    "type": "error",
+                    "message": "Enviou muitas mensagens num curto espaço de tempo. Por favor, aguarde um minuto."
+                }, user.id)
+                continue
             # Extrai os dados do payload multimodal
             # Esperamos formato: { "text": "...", "image_base64": "..." }
             user_text = data.get("text", "")

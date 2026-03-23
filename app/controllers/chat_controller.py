@@ -11,6 +11,7 @@ from app.core.logger import setup_logger
 from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
 from app.services.gemini_service import gemini_service
 from app.services.stt_service import stt_service
+from app.services.redis_service import redis_service
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["Chat Multimodal REST"])
@@ -29,7 +30,13 @@ async def send_multimodal_message(
     # Valida o usuário
     user = verify_ws_token(token)
     logger.info(f"Requisição HTTP Multimodal recebida do usuário {user.id}")
-
+    is_allowed = await redis_service.check_rate_limit(user.id, max_requests=10, window_seconds=60)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Muitos pedidos. Por favor, aguarde um minuto."
+        )
+        
     if not text and not file:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

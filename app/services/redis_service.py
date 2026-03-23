@@ -94,6 +94,37 @@ class RedisService:
         key = self._get_key(user_id)
         await self.redis.delete(key)
         logger.info(f"Histórico limpo para usuário {user_id}.")
-
+    async def check_rate_limit(self, user_id: int, max_requests: int = 10, window_seconds: int = 60) -> bool:
+        """
+        Verifica se o utilizador excedeu o limite de pedidos numa janela de tempo.
+        Utiliza a operação atómica INCR do Redis para evitar 'race conditions'.
+        
+        Args:
+            user_id (int): O ID do utilizador autenticado.
+            max_requests (int): Número máximo de pedidos permitidos.
+            window_seconds (int): Tempo da janela em segundos (ex: 60 = 1 minuto).
+            
+        Returns:
+            bool: True se o pedido é permitido, False se excedeu o limite.
+        """
+        key = f"rate_limit:user:{user_id}"
+        
+        try:
+            # Incrementa o contador para esta chave
+            current_requests = await self.redis.incr(key)
+            
+            # Se for o primeiro pedido da janela, define o tempo de expiração
+            if current_requests == 1:
+                await self.redis.expire(key, window_seconds)
+                
+            if current_requests > max_requests:
+                logger.warning(f"Rate limit excedido para o utilizador {user_id}. Pedidos: {current_requests}/{max_requests}")
+                return False
+                
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao verificar rate limit no Redis: {str(e)}")
+            # Em caso de falha no Redis, permitimos o fluxo (Fail-open) para não bloquear a aplicação inteira
+            return True
 # Instância global Singleton
 redis_service = RedisService()
