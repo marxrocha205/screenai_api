@@ -11,6 +11,8 @@ from app.core.security import verify_ws_token
 from app.core.logger import setup_logger
 from app.services.gemini_service import gemini_service 
 from app.services.tts_service import tts_service
+from app.services.stt_service import stt_service
+
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/ws", tags=["Tempo Real"])
@@ -30,11 +32,23 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
             # Esperamos formato: { "text": "...", "image_base64": "..." }
             user_text = data.get("text", "")
             image_b64 = data.get("image_base64") # Opcional
+            audio_b64 = data.get("audio_base64")
             
             logger.info(f"Dados multimodais recebidos do usuário {user.id}.")
             
             image_bytes = None
             
+            if audio_b64:
+                texto_transcrito = await stt_service.transcribe_base64(audio_b64)
+                if texto_transcrito:
+                    # O texto transcrito substitui ou complementa o texto digitado
+                    user_text = texto_transcrito
+                    
+                    # Opcional: Avisar o frontend qual foi o texto reconhecido
+                    await manager.send_personal_message({
+                        "type": "transcription",
+                        "message": f"Você disse: {user_text}"
+                    }, user.id)
             # Processa a imagem se enviada
             if image_b64:
                 try:
