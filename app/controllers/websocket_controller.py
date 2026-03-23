@@ -10,6 +10,7 @@ from app.services.websocket_manager import manager
 from app.core.security import verify_ws_token
 from app.core.logger import setup_logger
 from app.services.gemini_service import gemini_service 
+from app.services.tts_service import tts_service
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/ws", tags=["Tempo Real"])
@@ -51,21 +52,23 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                         "message": "Erro no formato da imagem enviada."
                     }, user.id)
                     continue # Pula para a próxima iteração do loop
-
-            # Envia para o serviço da IA processar
+            
             resposta_ia = await gemini_service.generate_response(
                 user_id=user.id,
                 user_message=user_text,
                 image_bytes=image_bytes
-            )
+            )        
+            # Envia para o serviço da IA processar
+            audio_b64 = await tts_service.generate_audio_base64(resposta_ia)
             
-            # Monta a resposta final para o frontend (que usará Text-to-Speech)
-            # O formato JSON permite que o front diferencie respostas da IA de erros
+            # Monta a estrutura multimodal de resposta
             resposta_final = {
                 "type": "ai_response",
-                "message": resposta_ia
+                "message": resposta_ia,
+                "audio_base64": audio_b64 # Novo campo no JSON
             }
             
+            # Devolve para o usuário via WebSocket
             await manager.send_personal_message(resposta_final, user.id)
             
     except WebSocketDisconnect:
