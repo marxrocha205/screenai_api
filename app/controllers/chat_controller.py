@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.core.logger import setup_logger
 from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
 from app.services.gemini_service import gemini_service
+from app.services.stt_service import stt_service
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["Chat Multimodal REST"])
@@ -93,3 +94,42 @@ async def send_multimodal_message(
         "user_id": user.id,
         "response": resposta_ia
     }
+
+@router.post("/transcribe")
+async def transcribe_voice(
+    token: str,
+    audio_file: UploadFile = File(...)
+):
+    """
+    Rota REST exclusiva para transcrição de áudio.
+    Recebe um arquivo de voz e devolve o texto, sem chamar o Gemini.
+    """
+    user = verify_ws_token(token)
+    logger.info(f"Requisição de transcrição REST recebida do usuário {user.id}")
+
+    # Validação simples de tipo de arquivo
+    if not audio_file.content_type.startswith("audio/"):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="O arquivo enviado não é um formato de áudio válido."
+        )
+
+    try:
+        file_bytes = await audio_file.read()
+        
+        # Pega a extensão do arquivo original (ex: .mp3, .wav, .webm)
+        extensao = f".{audio_file.filename.split('.')[-1]}" if "." in audio_file.filename else ".webm"
+        
+        texto_transcrito = await stt_service.transcribe_audio_file(file_bytes, suffix=extensao)
+        
+        return {
+            "status": "success",
+            "user_id": user.id,
+            "text": texto_transcrito
+        }
+    except Exception as e:
+        logger.error(f"Erro na rota de transcrição: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro interno ao transcrever o áudio."
+        )  
