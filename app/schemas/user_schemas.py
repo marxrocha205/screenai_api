@@ -22,3 +22,18 @@ class Token(BaseModel):
     """Schema para retorno do token de autenticação."""
     access_token: str
     token_type: str
+
+class UserProfileResponse(BaseModel):
+    """
+    Schema para retornar o perfil completo do painel do cliente, 
+    incluindo os dados financeiros da assinatura e saldo atual.
+    """
+    id: int
+    email: EmailStr
+    plan_name: str
+    subscription_status: str
+    remaining_credits: int
+    total_monthly_credits: int
+
+    class Config:
+        from_attributes = True  # Permite ler dados diretamente do modelo SQLAlchemy
