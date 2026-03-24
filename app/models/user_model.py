@@ -3,6 +3,7 @@ Modelo de dados do Usuário (Entidade do Banco de Dados).
 """
 from sqlalchemy import Column, Integer, String, Boolean, DateTime
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 from app.core.database import Base
 
 class User(Base):
@@ -13,3 +14,7 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relacionamento 1:1 com a tabela de assinaturas.
+    # uselist=False garante que o SQLAlchemy retorne um único objeto, não uma lista.
+    subscription = relationship("Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan")

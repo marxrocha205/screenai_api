@@ -10,6 +10,8 @@ from app.core.database import get_db
 from app.core.logger import setup_logger
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.models.user_model import User
+from app.models.plan_model import Plan
+from app.models.subscription_model import Subscription
 from app.schemas.user_schemas import UserCreate, UserResponse, Token
 
 logger = setup_logger(__name__)
@@ -32,21 +34,44 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         )
     
     try:
-        # Criação do novo usuário
+        # 1. Busca o plano Free no catálogo
+        free_plan = db.query(Plan).filter(Plan.name == "Free").first()
+        if not free_plan:
+            logger.error("Plano 'Free' não encontrado na base de dados. Falha crítica.")
+            raise HTTPException(status_code=500, detail="Erro de configuração do sistema.")
+
+        # 2. Cria o novo utilizador
         hashed_pw = get_password_hash(user.password)
         new_user = User(email=user.email, hashed_password=hashed_pw)
-        
         db.add(new_user)
+        
+        # Dica de Engenharia (flush): 
+        # Envia o utilizador para a base de dados para gerar o ID, mas não consolida (commit) ainda.
+        # Se a criação da assinatura falhar, o utilizador não será guardado (Transação atómica).
+        db.flush() 
+        
+        # 3. Cria a Assinatura vinculando o ID do Utilizador ao ID do Plano
+        new_subscription = Subscription(
+            user_id=new_user.id,
+            plan_id=free_plan.id,
+            status="active",
+            remaining_credits=free_plan.monthly_credits
+        )
+        db.add(new_subscription)
+        
+        # 4. Consolida tudo (Utilizador + Assinatura) em segurança
         db.commit()
         db.refresh(new_user)
         
-        logger.info(f"Usuário {user.email} registrado com sucesso. ID: {new_user.id}")
+        logger.info(f"Utilizador {user.email} registado com plano Free (ID: {new_user.id})")
         return new_user
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Erro no banco de dados ao registrar usuário: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro interno ao registrar usuário.")
+        logger.error(f"Erro na base de dados ao registar utilizador: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno ao registar utilizador.")
 
 @router.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
