@@ -106,7 +106,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                 )
                 
                 # 7. Processamento da IA (Geração de Voz TTS)
-                audio_b64_response = await tts_service.generate_audio_base64(resposta_ia)
+                audio_b64_response = await tts_service.generate_audio_base64(
+                    text=resposta_ia, 
+                    plan_id=plan_id
+                )
                 
                 # 8. Efetivação da Cobrança
                 billing_service.deduct_credits(db, user_id, amount=custo_total)
