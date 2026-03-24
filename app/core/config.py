@@ -11,10 +11,18 @@ class Settings(BaseSettings):
     gemini_api_key: str
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str
+    app_name: str = "assistente-api"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60
+    log_level: str = "DEBUG"
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/0"
 
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  
+
 
 # Instância global de configurações
 settings = Settings()

@@ -13,6 +13,7 @@ from app.models.user_model import User
 from app.models.plan_model import Plan
 from app.models.subscription_model import Subscription
 from app.schemas.user_schemas import UserCreate, UserResponse, Token
+from app.repositories.user_repository import UserRepository
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Autenticação"])
@@ -24,8 +25,10 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     """
     logger.info(f"Tentativa de registro para o email: {user.email}")
     
+    repo = UserRepository(db)
+    
     # Verifica se o email já existe
-    db_user = db.query(User).filter(User.email == user.email).first()
+    db_user = repo.get_by_email(user.email)
     if db_user:
         logger.warning(f"Falha de registro: Email {user.email} já cadastrado.")
         raise HTTPException(

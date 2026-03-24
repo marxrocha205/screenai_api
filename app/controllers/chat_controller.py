@@ -8,7 +8,8 @@ from typing import Optional
 
 from app.core.database import get_db
 from app.core.logger import setup_logger
-from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
+from app.core.security import get_current_user # Nova dependência unificada
+from app.models.user_model import User
 from app.services.gemini_service import gemini_service
 from app.services.stt_service import stt_service
 from app.services.redis_service import redis_service
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api/chat", tags=["Chat Multimodal REST"])
 # Rota protegida por autenticação (Passa o token no cabeçalho ou na query)
 @router.post("/message")
 async def send_multimodal_message(
-    token: str,
+    user: User = Depends(get_current_user),
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None)
 ):
@@ -27,8 +28,7 @@ async def send_multimodal_message(
     Recebe uma mensagem de texto e/ou um arquivo (Áudio, PDF, Imagem).
     Processa e retorna a resposta da IA.
     """
-    # Valida o usuário
-    user = verify_ws_token(token)
+    # A validação do usuário agora é feita automaticamente pela dependência get_current_user
     logger.info(f"Requisição HTTP Multimodal recebida do usuário {user.id}")
     is_allowed = await redis_service.check_rate_limit(user.id, max_requests=10, window_seconds=60)
     if not is_allowed:
@@ -104,14 +104,14 @@ async def send_multimodal_message(
 
 @router.post("/transcribe")
 async def transcribe_voice(
-    token: str,
+    user: User = Depends(get_current_user),
     audio_file: UploadFile = File(...)
 ):
     """
     Rota REST exclusiva para transcrição de áudio.
     Recebe um arquivo de voz e devolve o texto, sem chamar o Gemini.
     """
-    user = verify_ws_token(token)
+    # Validação automática via dependência
     logger.info(f"Requisição de transcrição REST recebida do usuário {user.id}")
     is_allowed = await redis_service.check_rate_limit(user.id, max_requests=5, window_seconds=60)
     if not is_allowed:
