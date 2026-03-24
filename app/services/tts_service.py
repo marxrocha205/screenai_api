@@ -37,7 +37,7 @@ class TTSService:
         texto_limpo = re.sub(r'[*#_]', '', texto)
         return texto_limpo
 
-    async def generate_audio_base64(self, text: str) -> str:
+    async def generate_audio_base64(self, text: str, plan_id: int) -> str:
         """
         Envia o texto para a OpenAI e retorna o áudio MP3 codificado em Base64.
         
@@ -50,8 +50,12 @@ class TTSService:
         if not text:
             return ""
 
+        if plan_id == 1:
+            logger.debug("Utilizador Free (Plano 1). Geração de voz premium ignorada para poupar custos.")
+            return "" # Retorna vazio. O frontend usará a Web Speech API (gratuita).
+
         texto_processado = self._limpar_texto_para_fala(text)
-        logger.info("Solicitando geração de áudio para a OpenAI...")
+        logger.info(f"Solicitando geração de áudio OpenAI para utilizador do Plano {plan_id}...")
 
         try:
             # Chamada assíncrona para não bloquear o servidor FastAPI
