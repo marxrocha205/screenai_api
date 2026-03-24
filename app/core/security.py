@@ -47,24 +47,27 @@ def create_access_token(data: dict) -> str:
 def verify_ws_token(token: str) -> User:
     """
     Verifica o token JWT passado via WebSocket (Query Params).
-    Retorna o usuário se válido, caso contrário levanta uma exceção de fechamento do WebSocket.
+    Retorna um dicionário com os dados extraídos do token de forma ultrarrápida,
+    evitando chamadas síncronas pesadas à base de dados.
     """
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            logger.warning("Token de WebSocket sem email (sub).")
-            raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
-            
-        db: Session = SessionLocal()
-        user = db.query(User).filter(User.email == email).first()
-        db.close()
         
-        if user is None:
-            logger.warning(f"Usuário não encontrado para o email: {email}")
+        email: str = payload.get("sub")
+        user_id: int = payload.get("user_id")
+        plan_id: int = payload.get("plan_id")
+        
+        if email is None or user_id is None:
+            logger.warning("Token de WebSocket com payload incompleto.")
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
             
-        return user
+        # Retorna um objeto simples (dict) em vez de instanciar um modelo do SQLAlchemy.
+        # Isto deixa o WebSocket absurdamente mais rápido e leve.
+        return {
+            "id": user_id,
+            "email": email,
+            "plan_id": plan_id
+        }
         
     except jwt.ExpiredSignatureError:
         logger.error("Token de WebSocket expirado.")

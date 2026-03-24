@@ -15,6 +15,8 @@ from app.core.database import Base
 # IMPORTANTE: Você deve importar TODOS os seus modelos aqui.
 # Se criar um novo modelo no futuro, importe-o neste arquivo.
 from app.models.user_model import User
+from app.models.plan_model import Plan             # NOVO
+from app.models.subscription_model import Subscription # NOVO
 
 config = context.config
 

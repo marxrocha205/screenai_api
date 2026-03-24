@@ -10,6 +10,8 @@ from app.core.database import get_db
 from app.core.logger import setup_logger
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.models.user_model import User
+from app.models.plan_model import Plan
+from app.models.subscription_model import Subscription
 from app.schemas.user_schemas import UserCreate, UserResponse, Token
 
 logger = setup_logger(__name__)
@@ -32,42 +34,74 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         )
     
     try:
-        # Criação do novo usuário
+        # 1. Busca o plano Free no catálogo
+        free_plan = db.query(Plan).filter(Plan.name == "Free").first()
+        if not free_plan:
+            logger.error("Plano 'Free' não encontrado na base de dados. Falha crítica.")
+            raise HTTPException(status_code=500, detail="Erro de configuração do sistema.")
+
+        # 2. Cria o novo utilizador
         hashed_pw = get_password_hash(user.password)
         new_user = User(email=user.email, hashed_password=hashed_pw)
-        
         db.add(new_user)
+        
+        # Dica de Engenharia (flush): 
+        # Envia o utilizador para a base de dados para gerar o ID, mas não consolida (commit) ainda.
+        # Se a criação da assinatura falhar, o utilizador não será guardado (Transação atómica).
+        db.flush() 
+        
+        # 3. Cria a Assinatura vinculando o ID do Utilizador ao ID do Plano
+        new_subscription = Subscription(
+            user_id=new_user.id,
+            plan_id=free_plan.id,
+            status="active",
+            remaining_credits=free_plan.monthly_credits
+        )
+        db.add(new_subscription)
+        
+        # 4. Consolida tudo (Utilizador + Assinatura) em segurança
         db.commit()
         db.refresh(new_user)
         
-        logger.info(f"Usuário {user.email} registrado com sucesso. ID: {new_user.id}")
+        logger.info(f"Utilizador {user.email} registado com plano Free (ID: {new_user.id})")
         return new_user
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Erro no banco de dados ao registrar usuário: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro interno ao registrar usuário.")
+        logger.error(f"Erro na base de dados ao registar utilizador: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno ao registar utilizador.")
 
 @router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """
-    Autentica o usuário e retorna um token JWT.
+    Autentica o utilizador e gera o token JWT enriquecido com dados de negócio (user_id, plan_id).
     """
-    logger.info(f"Tentativa de login para o usuário: {form_data.username}")
+    logger.info(f"Tentativa de login para o utilizador: {form_data.username}")
     
-    # Busca o usuário pelo email (o form_data usa 'username' por padrão no OAuth2)
     user = db.query(User).filter(User.email == form_data.username).first()
-    
     if not user or not verify_password(form_data.password, user.hashed_password):
-        logger.warning(f"Falha de login para {form_data.username}: Credenciais inválidas.")
+        logger.warning(f"Falha de login: Credenciais inválidas para {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou senha incorretos",
             headers={"WWW-Authenticate": "Bearer"},
         )
-        
-    # Gera o token JWT
-    access_token = create_access_token(data={"sub": user.email})
-    logger.info(f"Login bem-sucedido para {user.email}")
+
+    # Vai buscar os dados da assinatura do utilizador
+    subscription = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+    plan_id = subscription.plan_id if subscription else None
     
+    # ENRIQUECIMENTO DO PAYLOAD
+    # Em vez de passar apenas o email, passamos um dicionário rico em contexto
+    access_token = create_access_token(
+        data={
+            "sub": user.email,
+            "user_id": user.id,
+            "plan_id": plan_id
+        }
+    )
+    
+    logger.info(f"Login bem-sucedido para {user.email}. Token gerado.")
     return {"access_token": access_token, "token_type": "bearer"}

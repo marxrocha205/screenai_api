@@ -113,7 +113,12 @@ async def transcribe_voice(
     """
     user = verify_ws_token(token)
     logger.info(f"Requisição de transcrição REST recebida do usuário {user.id}")
-
+    is_allowed = await redis_service.check_rate_limit(user.id, max_requests=5, window_seconds=60)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Limite de transcrições de voz atingido. Aguarde um minuto."
+        )
     # Validação simples de tipo de arquivo
     if not audio_file.content_type.startswith("audio/"):
         raise HTTPException(

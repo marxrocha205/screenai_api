@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.logger import setup_logger
 from app.controllers import auth_controller, websocket_controller, chat_controller
+from app.core.database import SessionLocal 
+from app.core.seed import seed_plans
 
 logger = setup_logger(__name__)
 
@@ -30,7 +32,15 @@ app.include_router(chat_controller.router)
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Iniciando a API ScreenAI...")
+    logger.info("A iniciar a API ScreenAI...")
+    
+    # Executa o Seed dos dados obrigatórios
+    db = SessionLocal()
+    try:
+        seed_plans(db)
+        logger.info("Verificação de dados iniciais (Seed) concluída.")
+    finally:
+        db.close()
 
 @app.get("/health")
 def health_check():
