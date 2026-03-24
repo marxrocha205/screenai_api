@@ -1,7 +1,7 @@
 """
 Serviço de integração com a API do Google Gemini.
 Atualizado para suportar upload de arquivos (Áudio e Documentos) usando
-a File API do Google Generative AI.
+a File API do Google Generative AI e Roteamento Dinâmico por Planos (Arbitragem).
 """
 import os
 import tempfile
@@ -21,7 +21,6 @@ class GeminiService:
     def __init__(self):
         try:
             genai.configure(api_key=settings.gemini_api_key)
-            self.model_name = "gemini-2.5-flash-lite"
             
             self.safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -31,12 +30,7 @@ class GeminiService:
             }
             
             self.system_instruction = self._load_system_prompt()
-            self.model = genai.GenerativeModel(
-                model_name=self.model_name,
-                safety_settings=self.safety_settings,
-                system_instruction=self.system_instruction
-            )
-            logger.info(f"Serviço ScreenAI ({self.model_name}) inicializado.")
+            logger.info("Serviço ScreenAI (Base de Arbitragem) inicializado com sucesso.")
         except Exception as e:
             logger.error(f"Falha ao inicializar o Gemini API: {str(e)}")
             raise
@@ -49,6 +43,20 @@ class GeminiService:
         except FileNotFoundError:
             logger.error(f"Arquivo de prompt não encontrado em {prompt_path}.")
             raise
+
+    def _get_model_for_plan(self, plan_id: int) -> str:
+        """
+        Regra de Negócio de Arbitragem de API:
+        ID 3 (Plus) -> gemini-2.5-pro
+        ID 2 (Pro)  -> gemini-2.5-flash
+        ID 1 (Free) -> gemini-2.5-flash-lite
+        """
+        if plan_id == 3:
+            return "gemini-2.5-pro"
+        elif plan_id == 2:
+            return "gemini-2.5-flash"
+        else:
+            return "gemini-2.5-flash-lite"
 
     async def upload_file_to_gemini(self, file_bytes: bytes, mime_type: str, file_name: str) -> Any:
         """
@@ -78,17 +86,28 @@ class GeminiService:
     async def generate_response(
         self, 
         user_id: int, 
+        plan_id: int, # NOVO: ID do plano injetado pelo WebSocket
         user_message: str = "", 
         image_bytes: Optional[bytes] = None,
         uploaded_files: Optional[List[Any]] = None
     ) -> str:
         """
         Gera resposta mantendo o histórico, suportando texto, imagem (inline) e arquivos pesados (File API).
+        Roteia dinamicamente o modelo de IA baseado no plano do usuário.
         """
-        logger.info(f"Processando requisição multimodal para usuário {user_id}.")
+        # 1. Roteamento Inteligente
+        model_name = self._get_model_for_plan(plan_id)
+        logger.info(f"Processando requisição multimodal para usuário {user_id}. Roteado para: {model_name}")
+        
+        # 2. Instancia o modelo selecionado com o prompt correto
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            safety_settings=self.safety_settings,
+            system_instruction=self.system_instruction
+        )
         
         history = await redis_service.get_history(user_id)
-        chat_session = self.model.start_chat(history=history)
+        chat_session = model.start_chat(history=history)
         
         # O payload pode conter strings, imagens PIL ou referências a arquivos no Google (uploaded_files)
         content_payload: List[Any] = []

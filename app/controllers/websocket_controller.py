@@ -100,6 +100,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                 # 6. Processamento da IA (Geração de Texto)
                 resposta_ia = await gemini_service.generate_response(
                     user_id=user_id,
+                    plan_id=plan_id,
                     user_message=user_text,
                     image_bytes=image_bytes
                 )
