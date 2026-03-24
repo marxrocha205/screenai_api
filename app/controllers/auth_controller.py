@@ -74,25 +74,34 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Erro interno ao registar utilizador.")
 
 @router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """
-    Autentica o usuário e retorna um token JWT.
+    Autentica o utilizador e gera o token JWT enriquecido com dados de negócio (user_id, plan_id).
     """
-    logger.info(f"Tentativa de login para o usuário: {form_data.username}")
+    logger.info(f"Tentativa de login para o utilizador: {form_data.username}")
     
-    # Busca o usuário pelo email (o form_data usa 'username' por padrão no OAuth2)
     user = db.query(User).filter(User.email == form_data.username).first()
-    
     if not user or not verify_password(form_data.password, user.hashed_password):
-        logger.warning(f"Falha de login para {form_data.username}: Credenciais inválidas.")
+        logger.warning(f"Falha de login: Credenciais inválidas para {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou senha incorretos",
             headers={"WWW-Authenticate": "Bearer"},
         )
-        
-    # Gera o token JWT
-    access_token = create_access_token(data={"sub": user.email})
-    logger.info(f"Login bem-sucedido para {user.email}")
+
+    # Vai buscar os dados da assinatura do utilizador
+    subscription = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+    plan_id = subscription.plan_id if subscription else None
     
+    # ENRIQUECIMENTO DO PAYLOAD
+    # Em vez de passar apenas o email, passamos um dicionário rico em contexto
+    access_token = create_access_token(
+        data={
+            "sub": user.email,
+            "user_id": user.id,
+            "plan_id": plan_id
+        }
+    )
+    
+    logger.info(f"Login bem-sucedido para {user.email}. Token gerado.")
     return {"access_token": access_token, "token_type": "bearer"}

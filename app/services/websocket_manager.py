@@ -11,40 +11,53 @@ logger = setup_logger(__name__)
 
 class ConnectionManager:
     def __init__(self):
-        # Dicionário para mapear o ID do usuário à sua conexão ativa
-        # Formato: {user_id: WebSocket}
-        self.active_connections: Dict[int, WebSocket] = {}
+        # Dicionário mapeando: user_id -> instância do WebSocket ativo
+        self.active_connections: dict[int, WebSocket] = {}
 
     async def connect(self, websocket: WebSocket, user_id: int):
-        """
-        Aceita a conexão e a registra no dicionário de conexões ativas.
-        """
         await websocket.accept()
-        self.active_connections[user_id] = websocket
-        logger.info(f"Usuário {user_id} conectado ao WebSocket. Total ativo: {len(self.active_connections)}")
-
-    def disconnect(self, user_id: int):
-        """
-        Remove o usuário do dicionário de conexões ativas.
-        """
+        
+        # -------------------------------------------------------------
+        # BLOQUEIO DE CONCORRÊNCIA (Card 2.3)
+        # -------------------------------------------------------------
         if user_id in self.active_connections:
+            logger.warning(f"Usuário {user_id} abriu nova sessão. Derrubando a conexão anterior.")
+            old_ws = self.active_connections[user_id]
+            try:
+                # Envia um aviso claro para a aba/dispositivo antigo antes de cortar a linha
+                await old_ws.send_json({
+                    "type": "error",
+                    "message": "Sessão encerrada. Sua conta foi conectada em outro dispositivo ou aba."
+                })
+                # 1008 = Policy Violation (Violação de Política do Servidor)
+                await old_ws.close(code=1008) 
+            except Exception as e:
+                logger.error(f"Erro ao fechar conexão antiga do usuário {user_id}: {str(e)}")
+        # -------------------------------------------------------------
+
+        # Registra a nova conexão como a oficial
+        self.active_connections[user_id] = websocket
+        logger.info(f"Usuário {user_id} registrado. Total de conexões ativas: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket, user_id: int):
+        """
+        Remove a conexão do dicionário.
+        Dica de Engenharia: Só removemos se o websocket que está pedindo para sair 
+        for exatamente o mesmo que está registrado. Isso evita que a morte da conexão 
+        antiga apague acidentalmente a nova conexão recém-criada.
+        """
+        if user_id in self.active_connections and self.active_connections[user_id] == websocket:
             del self.active_connections[user_id]
-            logger.info(f"Usuário {user_id} desconectado. Total ativo: {len(self.active_connections)}")
+            logger.info(f"Usuário {user_id} desconectado. Total ativas: {len(self.active_connections)}")
 
     async def send_personal_message(self, message: dict, user_id: int):
-        """
-        Envia uma mensagem no formato JSON exclusivamente para um usuário.
-        """
-        websocket = self.active_connections.get(user_id)
-        if websocket:
+        if user_id in self.active_connections:
+            websocket = self.active_connections[user_id]
             try:
                 await websocket.send_json(message)
-                logger.debug(f"Mensagem enviada para usuário {user_id}: {message}")
             except Exception as e:
                 logger.error(f"Erro ao enviar mensagem para usuário {user_id}: {str(e)}")
-                self.disconnect(user_id)
-        else:
-            logger.warning(f"Tentativa de envio de mensagem para usuário {user_id} não conectado.")
+                self.disconnect(websocket, user_id)
 
-# Instância global gerenciadora (Singleton)
+# Instância Singleton
 manager = ConnectionManager()

@@ -1,6 +1,6 @@
 """
 Controlador de rotas para o WebSocket.
-Atualizado para processar payloads multimodais (Texto + Imagem Base64).
+Processa payloads multimodais (Texto + Imagem + Áudio), valida Rate Limit e cobra os Créditos.
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import base64
@@ -12,8 +12,10 @@ from app.core.logger import setup_logger
 from app.services.gemini_service import gemini_service 
 from app.services.tts_service import tts_service
 from app.services.stt_service import stt_service
-from app.services.redis_service import redis_service # Importe o serviço do Redis
-
+from app.services.redis_service import redis_service
+from app.core.database import SessionLocal
+from app.services.billing_service import billing_service
+from app.models.subscription_model import Subscription
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/ws", tags=["Tempo Real"])
@@ -21,86 +23,114 @@ router = APIRouter(prefix="/ws", tags=["Tempo Real"])
 @router.websocket("/assistente")
 async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     """Endpoint WebSocket para o ScreenAI."""
-    user = verify_ws_token(token)
-    await manager.connect(websocket, user.id)
+    user_data = verify_ws_token(token)
+    user_id = user_data["id"]  # Agora acedemos como dicionário
+    plan_id = user_data["plan_id"] # Guardamos o plan_id para usar depois
+    
+    await manager.connect(websocket, user_id)
+    logger.info(f"Usuário {user_id} (Plano: {plan_id}) conectado ao WebSocket.")
     
     try:
         while True:
-            # Recebe o JSON do frontend
+            # 1. Recebe o JSON do frontend
             data = await websocket.receive_json()
+            
+            # 2. Rate Limiting (Evita spam e DDoS)
             is_allowed = await redis_service.check_rate_limit(
-                user_id=user.id, 
+                user_id=user_id, 
                 max_requests=10, 
                 window_seconds=60
             )
             
             if not is_allowed:
-                logger.warning(f"Bloqueando mensagem do utilizador {user.id} via WebSocket (Rate Limit).")
+                logger.warning(f"Bloqueando mensagem do usuário {user_id} via WebSocket (Rate Limit).")
                 await manager.send_personal_message({
                     "type": "error",
-                    "message": "Enviou muitas mensagens num curto espaço de tempo. Por favor, aguarde um minuto."
-                }, user.id)
+                    "message": "Você enviou muitas mensagens rapidamente. Por favor, aguarde um minuto."
+                }, user_id)
                 continue
+                
             # Extrai os dados do payload multimodal
-            # Esperamos formato: { "text": "...", "image_base64": "..." }
             user_text = data.get("text", "")
-            image_b64 = data.get("image_base64") # Opcional
+            image_b64 = data.get("image_base64")
             audio_b64 = data.get("audio_base64")
             
-            logger.info(f"Dados multimodais recebidos do usuário {user.id}.")
-            
-            image_bytes = None
-            
+            logger.info(f"Dados recebidos do usuário {user_id}.")
+
+            # 3. Transcrição de Áudio STT (se o usuário enviou voz)
             if audio_b64:
                 texto_transcrito = await stt_service.transcribe_base64(audio_b64)
                 if texto_transcrito:
-                    # O texto transcrito substitui ou complementa o texto digitado
                     user_text = texto_transcrito
-                    
-                    # Opcional: Avisar o frontend qual foi o texto reconhecido
                     await manager.send_personal_message({
                         "type": "transcription",
                         "message": f"Você disse: {user_text}"
-                    }, user.id)
-            # Processa a imagem se enviada
+                    }, user_id)
+
+            # 4. Decodificação da Imagem (Tratamento Base64)
+            image_bytes = None
             if image_b64:
                 try:
-                    # Remove o cabeçalho 'data:image/png;base64,' se existir
                     if "," in image_b64:
                         image_b64 = image_b64.split(",")[1]
-                    
-                    # Decodifica Base64 para bytes binários
                     image_bytes = base64.b64decode(image_b64)
-                    logger.debug(f"Imagem Base64 decodificada para binário. Tamanho: {len(image_bytes)} bytes")
                 except Exception as e:
-                    logger.error(f"Falha na decodificação Base64 da imagem do usuário {user.id}: {str(e)}")
+                    logger.error(f"Falha na decodificação Base64 da imagem: {str(e)}")
+                    await manager.send_personal_message({"type": "error", "message": "Erro no formato da imagem enviada."}, user_id)
+                    continue
+
+            # -------------------------------------------------------------------
+            # 5. O PEDÁGIO (SISTEMA DE COBRANÇA E CRÉDITOS)
+            # -------------------------------------------------------------------
+            db = SessionLocal()
+            try:
+                # Calcula o custo da operação
+                has_image = bool(image_bytes)
+                custo_total = billing_service.calculate_interaction_cost(has_image=has_image, use_premium_voice=True)
+
+                # Verifica se há saldo ANTES de chamar as APIs pagas
+                if not billing_service.check_balance(db, user_id, required_credits=custo_total):
+                    logger.warning(f"Usuário {user_id} barrado por falta de créditos.")
                     await manager.send_personal_message({
                         "type": "error",
-                        "message": "Erro no formato da imagem enviada."
-                    }, user.id)
-                    continue # Pula para a próxima iteração do loop
-            
-            resposta_ia = await gemini_service.generate_response(
-                user_id=user.id,
-                user_message=user_text,
-                image_bytes=image_bytes
-            )        
-            # Envia para o serviço da IA processar
-            audio_b64 = await tts_service.generate_audio_base64(resposta_ia)
-            
-            # Monta a estrutura multimodal de resposta
-            resposta_final = {
-                "type": "ai_response",
-                "message": resposta_ia,
-                "audio_base64": audio_b64 # Novo campo no JSON
-            }
-            
-            # Devolve para o usuário via WebSocket
-            await manager.send_personal_message(resposta_final, user.id)
+                        "message": f"Créditos insuficientes. Esta ação custa {custo_total} créditos. Faça um upgrade do seu plano."
+                    }, user_id)
+                    continue 
+
+                # 6. Processamento da IA (Geração de Texto)
+                resposta_ia = await gemini_service.generate_response(
+                    user_id=user_id,
+                    user_message=user_text,
+                    image_bytes=image_bytes
+                )
+                
+                # 7. Processamento da IA (Geração de Voz TTS)
+                audio_b64_response = await tts_service.generate_audio_base64(resposta_ia)
+                
+                # 8. Efetivação da Cobrança
+                billing_service.deduct_credits(db, user_id, amount=custo_total)
+                
+                # Recupera o saldo atualizado para enviar ao Frontend
+                assinatura = db.query(Subscription).filter(Subscription.user_id == user_id).first()
+                saldo_atualizado = assinatura.remaining_credits
+                
+                # Monta a estrutura final
+                resposta_final = {
+                    "type": "ai_response",
+                    "message": resposta_ia,
+                    "audio_base64": audio_b64_response,
+                    "remaining_credits": saldo_atualizado
+                }
+                
+                await manager.send_personal_message(resposta_final, user_id)
+
+            except Exception as e:
+                logger.error(f"Erro no processamento da IA para o usuário {user_id}: {str(e)}")
+                await manager.send_personal_message({"type": "error", "message": "Erro interno ao processar sua requisição."}, user_id)
+            finally:
+                db.close() # Sempre libera a conexão com o banco!
+            # -------------------------------------------------------------------
             
     except WebSocketDisconnect:
-        logger.warning(f"Usuário {user.id} encerrou a conexão inesperadamente.")
-        manager.disconnect(user.id)
-    except Exception as e:
-        logger.error(f"Erro crítico no loop do WebSocket para usuário {user.id}: {str(e)}")
-        manager.disconnect(user.id)
+        logger.warning(f"Usuário {user_id} encerrou a conexão inesperadamente.")
+        manager.disconnect(websocket, user_id)

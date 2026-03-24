@@ -16,19 +16,19 @@ def seed_plans(db: Session):
         {
             "name": "Free",
             "price": 0.0,
-            "monthly_credits": 50,
+            "monthly_credits": 100, # Atualizado
             "is_active": True
         },
         {
             "name": "Pro",
-            "price": 19.90,
-            "monthly_credits": 1000,
+            "price": 44.90, # Atualizado
+            "monthly_credits": 1500, # Atualizado
             "is_active": True
         },
         {
-            "name": "Premium",
-            "price": 49.90,
-            "monthly_credits": 10000,
+            "name": "Plus",
+            "price": 89.90, # Atualizado
+            "monthly_credits": 4000, # Atualizado
             "is_active": True
         }
     ]
