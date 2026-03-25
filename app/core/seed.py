@@ -4,6 +4,8 @@ Garante que os Planos (Free, Pro, Premium) existam antes de qualquer utilizador 
 """
 from sqlalchemy.orm import Session
 from app.models.plan_model import Plan
+from app.models.user_model import User
+from app.models.subscription_model import Subscription
 from app.core.logger import setup_logger
 
 logger = setup_logger(__name__)
