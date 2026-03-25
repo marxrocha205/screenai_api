@@ -91,6 +91,7 @@ async def send_multimodal_message(
     # Envia os dados (texto e referências de arquivos) para a IA
     resposta_ia = await gemini_service.generate_response(
         user_id=user.id,
+        plan_id=user.subscription.plan_id,
         user_message=text or "",
         uploaded_files=uploaded_files_refs
     )

@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.core.logger import setup_logger
 
 from fastapi import WebSocketException, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.models.user_model import User
 from app.core.database import SessionLocal
 from app.repositories.user_repository import UserRepository
@@ -63,13 +63,13 @@ def _verify_token_data(token: str) -> str:
 def get_current_user(token: str = Query(...)) -> User:
     """
     Dependência para rotas HTTP. 
-    Retorna o usuário ou levanta HTTPException 401.
+    Retorna o usuário (com assinatura carregada) ou levanta HTTPException 401.
     """
     try:
         email = _verify_token_data(token)
         db = SessionLocal()
-        repo = UserRepository(db)
-        user = repo.get_by_email(email)
+        # Usamos joinedload para já trazer a assinatura na mesma consulta antes de fechar o DB
+        user = db.query(User).options(joinedload(User.subscription)).filter(User.email == email).first()
         db.close()
         
         if user is None:
