@@ -2,10 +2,11 @@
 Serviço de integração com o Redis.
 Responsável por armazenar e recuperar o histórico de conversas (Contexto)
 para manter a linha de raciocínio da IA em tempo real.
+Agora com suporte a isolamento de contexto por Sessão (session_id).
 """
 import json
 import redis.asyncio as aioredis
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.core.config import settings
 from app.core.logger import setup_logger
@@ -28,48 +29,54 @@ class RedisService:
             logger.error(f"Falha ao conectar no Redis: {str(e)}")
             raise
 
-    def _get_key(self, user_id: int) -> str:
-        """Padroniza a chave de armazenamento no Redis."""
+    def _get_key(self, user_id: int, session_id: Optional[str] = None) -> str:
+        """
+        Padroniza a chave de armazenamento no Redis.
+        Se session_id for fornecido, isola o histórico para aquela conversa específica.
+        """
+        if session_id:
+            return f"chat_history:user:{user_id}:session:{session_id}"
+        # Fallback de compatibilidade caso alguma parte do sistema não passe session_id
         return f"chat_history:user:{user_id}"
 
-    async def get_history(self, user_id: int) -> List[Dict[str, Any]]:
+    async def get_history(self, user_id: int, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Recupera o histórico de conversa do usuário.
+        Recupera o histórico de conversa específico de uma sessão do usuário.
         
         Args:
             user_id (int): ID do usuário.
+            session_id (str, optional): ID da conversa para isolar o contexto.
             
         Returns:
             List[Dict]: Lista de mensagens no formato exigido pelo modelo.
         """
-        key = self._get_key(user_id)
+        key = self._get_key(user_id, session_id)
         try:
             history_str = await self.redis.get(key)
             if history_str:
-                logger.debug(f"Histórico recuperado para usuário {user_id}.")
+                logger.debug(f"Histórico recuperado para usuário {user_id}, sessão {session_id}.")
                 return json.loads(history_str)
             return []
         except Exception as e:
             logger.error(f"Erro ao ler histórico do Redis para usuário {user_id}: {str(e)}")
             return []
 
-    async def save_interaction(self, user_id: int, user_message: str, model_response: str):
+    async def save_interaction(self, user_id: int, user_message: str, model_response: str, session_id: Optional[str] = None):
         """
-        Salva uma nova interação (pergunta do usuário e resposta da IA) no histórico.
+        Salva uma nova interação (pergunta do usuário e resposta da IA) no histórico da sessão.
         
         Args:
             user_id (int): ID do usuário.
             user_message (str): O que o usuário enviou.
             model_response (str): A resposta gerada pela IA.
+            session_id (str, optional): ID da conversa ativa.
         """
-        key = self._get_key(user_id)
+        key = self._get_key(user_id, session_id)
         try:
-            # 1. Recupera o histórico atual
-            history = await self.get_history(user_id)
+            # 1. Recupera o histórico atual DESTA sessão
+            history = await self.get_history(user_id, session_id)
             
             # 2. Adiciona a nova interação formatada para o Gemini
-            # Nota: Não salvamos imagens no Redis por questões de tamanho e custo de memória.
-            # O ScreenAI precisa da imagem atual para reagir, não do histórico de telas passadas.
             if user_message:
                 history.append({"role": "user", "parts": [user_message]})
             else:
@@ -78,42 +85,34 @@ class RedisService:
             history.append({"role": "model", "parts": [model_response]})
             
             # 3. Limita o tamanho do histórico para não estourar o limite de tokens da IA (ex: ultimas 10 interacoes)
-            # Cada interação são 2 itens (user + model), então pegamos os últimos 20 itens.
             if len(history) > 20:
                 history = history[-20:]
             
             # 4. Salva de volta no Redis com tempo de expiração renovado
             await self.redis.set(key, json.dumps(history), ex=self.ttl_seconds)
-            logger.info(f"Interação salva no histórico do usuário {user_id}.")
+            logger.info(f"Interação salva no histórico do usuário {user_id}, sessão {session_id}.")
             
         except Exception as e:
             logger.error(f"Erro ao salvar histórico no Redis para usuário {user_id}: {str(e)}")
 
-    async def clear_history(self, user_id: int):
-        """Limpa o histórico de um usuário (útil quando o objetivo é concluído)."""
-        key = self._get_key(user_id)
+    async def clear_history(self, user_id: int, session_id: Optional[str] = None):
+        """Limpa o histórico de uma sessão específica."""
+        key = self._get_key(user_id, session_id)
         await self.redis.delete(key)
-        logger.info(f"Histórico limpo para usuário {user_id}.")
+        logger.info(f"Histórico limpo para usuário {user_id}, sessão {session_id}.")
+
     async def check_rate_limit(self, user_id: int, max_requests: int = 10, window_seconds: int = 60) -> bool:
         """
         Verifica se o utilizador excedeu o limite de pedidos numa janela de tempo.
         Utiliza a operação atómica INCR do Redis para evitar 'race conditions'.
-        
-        Args:
-            user_id (int): O ID do utilizador autenticado.
-            max_requests (int): Número máximo de pedidos permitidos.
-            window_seconds (int): Tempo da janela em segundos (ex: 60 = 1 minuto).
-            
-        Returns:
-            bool: True se o pedido é permitido, False se excedeu o limite.
         """
+        # IMPORTANTE: O rate limit continua sendo por usuário global, e NÃO por sessão.
+        # Um usuário não deve poder contornar o limite criando novas conversas.
         key = f"rate_limit:user:{user_id}"
         
         try:
-            # Incrementa o contador para esta chave
             current_requests = await self.redis.incr(key)
             
-            # Se for o primeiro pedido da janela, define o tempo de expiração
             if current_requests == 1:
                 await self.redis.expire(key, window_seconds)
                 
@@ -124,7 +123,7 @@ class RedisService:
             return True
         except Exception as e:
             logger.error(f"Erro ao verificar rate limit no Redis: {str(e)}")
-            # Em caso de falha no Redis, permitimos o fluxo (Fail-open) para não bloquear a aplicação inteira
             return True
+
 # Instância global Singleton
 redis_service = RedisService()
