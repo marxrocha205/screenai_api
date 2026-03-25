@@ -20,18 +20,28 @@ router = APIRouter(prefix="/api/chat", tags=["Chat Multimodal REST"])
 # Rota protegida por autenticação (Passa o token no cabeçalho ou na query)
 @router.post("/message")
 async def send_multimodal_message(
-    token: str,
+    token: str = Form(...),
+    session_id: Optional[str] = Form(None),
     text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db) # INJETAMOS A SESSÃO DO BANCO DE DADOS
 ):
     """
     Recebe uma mensagem de texto e/ou um arquivo (Áudio, PDF, Imagem).
-    Processa e retorna a resposta da IA.
+    Processa, retorna a resposta da IA e SALVA no banco de dados.
     """
-    # Valida o usuário
+    # 1. Valida o usuário e extrai as credenciais
     user = verify_ws_token(token)
-    logger.info(f"Requisição HTTP Multimodal recebida do usuário {user.id}")
-    is_allowed = await redis_service.check_rate_limit(user.id, max_requests=10, window_seconds=60)
+    user_id = user["id"] if isinstance(user, dict) else user.id
+    
+    # Busca o plan_id (necessário para o gemini_service que você me enviou)
+    # Se o seu verify_ws_token não retornar o plan_id, coloque um padrão como 1 (Plano Free)
+    plan_id = user.get("plan_id", 1) if isinstance(user, dict) else getattr(user, "plan_id", 1)
+    
+    logger.info(f"Requisição HTTP Multimodal recebida do usuário {user_id}")
+    
+    # 2. Rate Limit
+    is_allowed = await redis_service.check_rate_limit(user_id, max_requests=10, window_seconds=60)
     if not is_allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -46,33 +56,27 @@ async def send_multimodal_message(
 
     uploaded_files_refs = []
 
-    # Processamento do arquivo (se existir)
+    # 3. Processamento do arquivo (se existir)
     if file:
         try:
-            # Lê os bytes do arquivo enviado pelo usuário
             file_bytes = await file.read()
             mime_type = file.content_type
             filename = file.filename
             
             logger.info(f"Processando arquivo: {filename} ({mime_type})")
             
-            # Validação básica de segurança para tipos permitidos
             tipos_permitidos = [
-                "application/pdf", 
-                "audio/mpeg", 
-                "audio/wav", 
-                "audio/ogg", 
-                "image/jpeg", 
-                "image/png"
+                "application/pdf", "audio/mpeg", "audio/wav", 
+                "audio/ogg", "image/jpeg", "image/png"
             ]
             
             if mime_type not in tipos_permitidos:
                 raise HTTPException(
                     status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                    detail=f"Tipo de arquivo não suportado. Envie PDF, Imagens ou Áudio."
+                    detail="Tipo de arquivo não suportado. Envie PDF, Imagens ou Áudio."
                 )
 
-            # Faz o upload para a infraestrutura do Gemini
+            # Upload para o Gemini
             gemini_file_ref = await gemini_service.upload_file_to_gemini(
                 file_bytes=file_bytes, 
                 mime_type=mime_type, 
@@ -89,18 +93,63 @@ async def send_multimodal_message(
                 detail="Erro ao processar o arquivo enviado."
             )
 
-    # Envia os dados (texto e referências de arquivos) para a IA
+    # 4. Envia para a IA e obtém a resposta (Passando o plan_id e o session_id!)
     resposta_ia = await gemini_service.generate_response(
-        user_id=user.id,
+        user_id=user_id,
+        plan_id=plan_id, # Requerido pelo _get_model_for_plan no gemini_service
+        session_id=session_id,
         user_message=text or "",
         uploaded_files=uploaded_files_refs
     )
 
-    # Retorna o JSON com a resposta da IA (A API REST retorna JSON padrão, não precisa gerenciar websocket aqui)
+    id_da_conversa = resposta_ia.get("session_id") or session_id
+    texto_resposta = resposta_ia.get("text", "Erro ao gerar resposta.")
+
+    # ---------------------------------------------------------
+    # 5. PERSISTÊNCIA NO POSTGRESQL (A MÁGICA DA BARRA LATERAL)
+    # ---------------------------------------------------------
+    try:
+        # Se não tínhamos um ID antes, é uma conversa nova. Precisamos criar a ChatSession.
+        if not session_id:
+            titulo = text[:30] + "..." if text else "Nova conversa multimodal"
+            nova_sessao = ChatSession(
+                id=id_da_conversa, 
+                user_id=user_id, 
+                title=titulo
+            )
+            db.add(nova_sessao)
+            db.commit() # Comita para a sessão existir antes de inserir as mensagens
+            logger.info(f"Sessão {id_da_conversa} salva no DB.")
+
+        # Salva a mensagem do usuário (texto ou sinalização de arquivo)
+        conteudo_user = text or f"[Arquivo enviado: {file.filename}]"
+        msg_user = ChatMessage(
+            session_id=id_da_conversa,
+            role="user",
+            content=conteudo_user
+        )
+        db.add(msg_user)
+
+        # Salva a resposta do assistente (IA)
+        msg_ai = ChatMessage(
+            session_id=id_da_conversa,
+            role="assistant",
+            content=texto_resposta
+        )
+        db.add(msg_ai)
+        
+        # Comita as mensagens no banco de dados
+        db.commit()
+    except Exception as db_err:
+        logger.error(f"Erro ao salvar histórico no banco: {str(db_err)}")
+        db.rollback() # Previne travamentos no banco caso algo dê errado
+
+    # 6. Retorna o resultado para o frontend
     return {
         "status": "success",
-        "user_id": user.id,
-        "response": resposta_ia
+        "user_id": user_id,
+        "session_id": id_da_conversa,
+        "response": texto_resposta
     }
 
 @router.post("/transcribe")

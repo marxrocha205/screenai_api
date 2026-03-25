@@ -6,10 +6,11 @@ a File API do Google Generative AI e Roteamento Dinâmico por Planos (Arbitragem
 import os
 import tempfile
 import google.generativeai as genai
+import uuid
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 from io import BytesIO
-from typing import List, Optional, Union, Any
+from typing import List, Optional,  Any, Dict
 
 from app.core.config import settings
 from app.core.logger import setup_logger
@@ -87,14 +88,19 @@ class GeminiService:
         self, 
         user_id: int, 
         plan_id: int, # NOVO: ID do plano injetado pelo WebSocket
+        session_id : Optional[str] = None,
         user_message: str = "", 
         image_bytes: Optional[bytes] = None,
         uploaded_files: Optional[List[Any]] = None
-    ) -> str:
+    ) -> Dict[str, str]:
         """
         Gera resposta mantendo o histórico, suportando texto, imagem (inline) e arquivos pesados (File API).
         Roteia dinamicamente o modelo de IA baseado no plano do usuário.
         """
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            logger.info(f"Nova sessão de chat criada: {session_id} para usuário {user_id}")
+            
         # 1. Roteamento Inteligente
         model_name = self._get_model_for_plan(plan_id)
         logger.info(f"Processando requisição multimodal para usuário {user_id}. Roteado para: {model_name}")
@@ -106,7 +112,7 @@ class GeminiService:
             system_instruction=self.system_instruction
         )
         
-        history = await redis_service.get_history(user_id)
+        history = await redis_service.get_history(user_id, session_id)
         chat_session = model.start_chat(history=history)
         
         # O payload pode conter strings, imagens PIL ou referências a arquivos no Google (uploaded_files)
@@ -147,14 +153,17 @@ class GeminiService:
                     
                 await redis_service.save_interaction(
                     user_id=user_id, 
+                    session_id=session_id,
                     user_message=resumo_interacao.strip(), 
                     model_response=resposta_final
                 )
                 
-                return resposta_final
+                return{
+                    "text": resposta_final,
+                    "session_id": session_id
+                }
             else:
-                return "Ops, não consegui processar isso."
-                
+                return {"text": "Ops, não consegui processar isso.", "session_id": session_id}
         except Exception as e:
             logger.error(f"Erro na comunicação com Gemini para usuário {user_id}: {str(e)}")
             return "Estou com uma instabilidade técnica agora."
