@@ -50,9 +50,9 @@ class TTSService:
         if not text:
             return ""
 
-        if plan_id == 1:
-            logger.debug("Utilizador Free (Plano 1). Geração de voz premium ignorada para poupar custos.")
-            return "" # Retorna vazio. O frontend usará a Web Speech API (gratuita).
+        # if plan_id == 1:
+        #     logger.debug("Utilizador Free (Plano 1). Geração de voz premium ignorada para poupar custos.")
+        #     return "" # Retorna vazio. O frontend usará a Web Speech API (gratuita).
 
         texto_processado = self._limpar_texto_para_fala(text)
         logger.info(f"Solicitando geração de áudio OpenAI para utilizador do Plano {plan_id}...")

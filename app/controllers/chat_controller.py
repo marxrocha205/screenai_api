@@ -11,6 +11,7 @@ from app.core.logger import setup_logger
 from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
 from app.services.gemini_service import gemini_service
 from app.services.stt_service import stt_service
+from app.services.tts_service import tts_service
 from app.services.redis_service import redis_service
 from app.services.billing_service import billing_service
 from app.models.chat_model import ChatSession, ChatMessage
@@ -156,17 +157,21 @@ async def send_multimodal_message(
         logger.error(f"Erro ao salvar histórico no banco: {str(db_err)}")
         db.rollback() 
 
-    # 6. Cobrança e Saldo
+    # 6. Geração de Áudio (Voz)
+    audio_b64 = await tts_service.generate_audio_base64(text=texto_resposta, plan_id=plan_id)
+
+    # 7. Cobrança e Saldo
     billing_service.deduct_credits(db, user_id, amount=custo_total)
     subscription = db.query(Subscription).filter(Subscription.user_id == user_id).first()
     saldo_atualizado = subscription.remaining_credits if subscription else 0
 
-    # 7. Retorna o resultado para o frontend
+    # 8. Retorna o resultado para o frontend
     return {
         "status": "success",
         "user_id": user_id,
         "session_id": id_da_conversa,
         "response": texto_resposta,
+        "audio_base64": audio_b64,
         "remaining_credits": saldo_atualizado
     }
 

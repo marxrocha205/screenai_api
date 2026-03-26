@@ -75,10 +75,9 @@ class GeminiService:
         try:
             # Faz o upload para os servidores do Google (expira automaticamente em 48h)
             # anyio.to_thread.run_sync evita que a chamada bloqueante trave o loop do FastAPI
+            # Usamos uma função lambda para passar os argumentos corretamente (path e mime_type)
             uploaded_file = await anyio.to_thread.run_sync(
-                genai.upload_file, 
-                temp_path, 
-                mime_type
+                lambda: genai.upload_file(path=temp_path, mime_type=mime_type)
             )
             logger.debug(f"Upload concluído. URI do arquivo: {uploaded_file.uri}")
             return uploaded_file
@@ -146,7 +145,7 @@ class GeminiService:
 
         try:
             # anyio.to_thread.run_sync evita que o processamento pesado do Gemini bloqueie o servidor
-            response = await anyio.to_thread.run_sync(chat_session.send_message, content_payload)
+            response = await anyio.to_thread.run_sync(lambda: chat_session.send_message(content_payload))
             
             if response.text:
                 resposta_final = response.text
