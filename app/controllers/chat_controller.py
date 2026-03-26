@@ -11,11 +11,8 @@ from app.core.logger import setup_logger
 from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
 from app.services.gemini_service import gemini_service
 from app.services.stt_service import stt_service
-from app.services.tts_service import tts_service
 from app.services.redis_service import redis_service
-from app.services.billing_service import billing_service
 from app.models.chat_model import ChatSession, ChatMessage
-from app.models.subscription_model import Subscription
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["Chat Multimodal REST"])
@@ -55,16 +52,6 @@ async def send_multimodal_message(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="É necessário enviar texto ou um arquivo."
-        )
-        
-    # 3. O PEDÁGIO (SISTEMA DE COBRANÇA E CRÉDITOS)
-    has_image = file is not None and file.content_type.startswith("image/")
-    custo_total = billing_service.calculate_interaction_cost(has_image=has_image)
-    
-    if not billing_service.check_balance(db, user_id, required_credits=custo_total):
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Créditos insuficientes. Esta ação custa {custo_total} créditos."
         )
 
     uploaded_files_refs = []
@@ -135,7 +122,7 @@ async def send_multimodal_message(
             logger.info(f"Sessão {id_da_conversa} salva no DB.")
 
         # Salva a mensagem do usuário (texto ou sinalização de arquivo)
-        conteudo_user = text if text else (f"[Arquivo enviado: {file.filename}]" if file else "[Mensagem Vazia]")
+        conteudo_user = text or f"[Arquivo enviado: {file.filename}]"
         msg_user = ChatMessage(
             session_id=id_da_conversa,
             role="user",
@@ -155,24 +142,14 @@ async def send_multimodal_message(
         db.commit()
     except Exception as db_err:
         logger.error(f"Erro ao salvar histórico no banco: {str(db_err)}")
-        db.rollback() 
+        db.rollback() # Previne travamentos no banco caso algo dê errado
 
-    # 6. Geração de Áudio (Voz)
-    audio_b64 = await tts_service.generate_audio_base64(text=texto_resposta, plan_id=plan_id)
-
-    # 7. Cobrança e Saldo
-    billing_service.deduct_credits(db, user_id, amount=custo_total)
-    subscription = db.query(Subscription).filter(Subscription.user_id == user_id).first()
-    saldo_atualizado = subscription.remaining_credits if subscription else 0
-
-    # 8. Retorna o resultado para o frontend
+    # 6. Retorna o resultado para o frontend
     return {
         "status": "success",
         "user_id": user_id,
         "session_id": id_da_conversa,
-        "response": texto_resposta,
-        "audio_base64": audio_b64,
-        "remaining_credits": saldo_atualizado
+        "response": texto_resposta
     }
 
 @router.post("/transcribe")
@@ -185,10 +162,8 @@ async def transcribe_voice(
     Recebe um arquivo de voz e devolve o texto, sem chamar o Gemini.
     """
     user = verify_ws_token(token)
-    user_id = user["id"] if isinstance(user, dict) else user.id
-    
-    logger.info(f"Requisição de transcrição REST recebida do usuário {user_id}")
-    is_allowed = await redis_service.check_rate_limit(user_id, max_requests=5, window_seconds=60)
+    logger.info(f"Requisição de transcrição REST recebida do usuário {user.id}")
+    is_allowed = await redis_service.check_rate_limit(user.id, max_requests=5, window_seconds=60)
     if not is_allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -201,16 +176,7 @@ async def transcribe_voice(
             detail="O arquivo enviado não é um formato de áudio válido."
         )
 
-    # 3. Cobrança para Transcrição (Custo base: 1 crédito)
-    db = next(get_db()) # Obtemos uma sessão manual já que não usamos Depends aqui
     try:
-        custo_transcricao = 1
-        if not billing_service.check_balance(db, user_id, required_credits=custo_transcricao):
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="Créditos insuficientes para realizar a transcrição."
-            )
-
         file_bytes = await audio_file.read()
         
         # Pega a extensão do arquivo original (ex: .mp3, .wav, .webm)
@@ -218,24 +184,17 @@ async def transcribe_voice(
         
         texto_transcrito = await stt_service.transcribe_audio_file(file_bytes, suffix=extensao)
         
-        # Deduz os créditos após o sucesso
-        billing_service.deduct_credits(db, user_id, amount=custo_transcricao)
-        
         return {
             "status": "success",
-            "user_id": user_id,
+            "user_id": user.id,
             "text": texto_transcrito
         }
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Erro na rota de transcrição: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro interno ao transcrever o áudio."
-        )
-    finally:
-        db.close()
+        )  
 @router.get("/sessions")
 async def get_chat_sessions(request: Request, db: Session = Depends(get_db)):
     """
@@ -299,23 +258,26 @@ async def delete_chat_session(session_id: str, request: Request, db: Session = D
     
     token = auth_header.split(" ")[1]
     user = verify_ws_token(token)
+    
+    # Tolerância pro Auth payload (às vezes é dit, às vezes objeto Pydantic)
     user_id = user["id"] if isinstance(user, dict) else user.id
 
-    # 1. Busca a sessão para verificar se pertence ao usuário
+    # Busca a sessão e garante que o usuário logado é o dono
     session = db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == user_id).first()
     
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada ou não pertence ao utilizador.")
     
     try:
-        # 2. Remove a sessão (O cascade delete configurado no model limpará as mensagens)
+        # Deleta a sessão_mãe. As mensagens vinculadas serão apagadas sozinhas
+        # devido à relação cascade="all, delete-orphan" no model.
         db.delete(session)
         db.commit()
         
-        logger.info(f"Sessão {session_id} excluída pelo usuário {user_id}")
+        logger.info(f"Sessão {session_id} excluída pelo utilizador {user_id}.")
+        return {"status": "success", "message": "Conversa apagada."}
         
-        return {"status": "success", "message": "Sessão excluída com sucesso."}
     except Exception as e:
         db.rollback()
         logger.error(f"Erro ao excluir sessão {session_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro interno ao excluir a sessão.")
+        raise HTTPException(status_code=500, detail="Erro interno ao apagar conversa.")
