@@ -11,6 +11,7 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 from io import BytesIO
 from typing import List, Optional,  Any, Dict
+import anyio
 
 from app.core.config import settings
 from app.core.logger import setup_logger
@@ -73,7 +74,11 @@ class GeminiService:
 
         try:
             # Faz o upload para os servidores do Google (expira automaticamente em 48h)
-            uploaded_file = genai.upload_file(path=temp_path, mime_type=mime_type)
+            # anyio.to_thread.run_sync evita que a chamada bloqueante trave o loop do FastAPI
+            # Usamos uma função lambda para passar os argumentos corretamente (path e mime_type)
+            uploaded_file = await anyio.to_thread.run_sync(
+                lambda: genai.upload_file(path=temp_path, mime_type=mime_type)
+            )
             logger.debug(f"Upload concluído. URI do arquivo: {uploaded_file.uri}")
             return uploaded_file
         except Exception as e:
@@ -129,17 +134,18 @@ class GeminiService:
                 content_payload.append(img)
             except Exception as e:
                 logger.error(f"Erro ao processar imagem para usuário {user_id}: {str(e)}")
-                return "Tive um problema técnico ao tentar ver sua tela."
+                return {"text": "Tive um problema técnico ao tentar ver sua tela.", "session_id": session_id}
 
         # Adiciona o texto
         if user_message:
             content_payload.append(user_message)
             
         if not content_payload:
-             return "Como posso ajudar?"
+             return {"text": "Como posso ajudar?", "session_id": session_id}
 
         try:
-            response = chat_session.send_message(content_payload)
+            # anyio.to_thread.run_sync evita que o processamento pesado do Gemini bloqueie o servidor
+            response = await anyio.to_thread.run_sync(lambda: chat_session.send_message(content_payload))
             
             if response.text:
                 resposta_final = response.text
@@ -166,6 +172,6 @@ class GeminiService:
                 return {"text": "Ops, não consegui processar isso.", "session_id": session_id}
         except Exception as e:
             logger.error(f"Erro na comunicação com Gemini para usuário {user_id}: {str(e)}")
-            return "Estou com uma instabilidade técnica agora."
+            return {"text": "Estou com uma instabilidade técnica agora.", "session_id": session_id}
 
 gemini_service = GeminiService()
