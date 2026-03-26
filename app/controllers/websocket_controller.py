@@ -91,7 +91,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
 
             # 5. O PEDÁGIO (SISTEMA DE COBRANÇA E CRÉDITOS)
             has_image = bool(image_bytes)
-            custo_total = billing_service.calculate_interaction_cost(has_image=has_image, use_premium_voice=True)
+            custo_total = billing_service.calculate_interaction_cost(has_image=has_image, use_premium_voice=False)
 
             if not billing_service.check_balance(db, user_id, required_credits=custo_total):
                 await manager.send_personal_message({
