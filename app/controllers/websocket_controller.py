@@ -74,7 +74,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                     user_text = texto_transcrito
                     await manager.send_personal_message({
                         "type": "transcription",
-                        "message": f"Você disse: {user_text}"
+                        "message": f"{user_text}"
                     }, user_id)
 
             # 4. Decodificação da Imagem
@@ -110,6 +110,14 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                     image_bytes=image_bytes
                 )
                 
+                # Trata erros em que o gemini_service retorna apenas uma string, ou quando texto/imagem estão vazios (ex: falha no STT)
+                if isinstance(resposta_ia, str):
+                    await manager.send_personal_message({
+                        "type": "error",
+                        "message": resposta_ia
+                    }, user_id)
+                    continue
+
                 # Extrai os dados retornados pelo Gemini Service atualizado
                 id_da_conversa = resposta_ia["session_id"]
                 texto_resposta = resposta_ia["text"]
