@@ -286,4 +286,36 @@ async def get_session_messages(session_id: str, request: Request, db: Session = 
             "role": m.role, 
             "content": m.content
         } for m in messages
-    ]        
+    ]
+
+@router.delete("/sessions/{session_id}")
+async def delete_chat_session(session_id: str, request: Request, db: Session = Depends(get_db)):
+    """
+    Exclui uma sessão de chat e todas as suas mensagens associadas.
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token ausente ou inválido.")
+    
+    token = auth_header.split(" ")[1]
+    user = verify_ws_token(token)
+    user_id = user["id"] if isinstance(user, dict) else user.id
+
+    # 1. Busca a sessão para verificar se pertence ao usuário
+    session = db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == user_id).first()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada ou não pertence ao utilizador.")
+    
+    try:
+        # 2. Remove a sessão (O cascade delete configurado no model limpará as mensagens)
+        db.delete(session)
+        db.commit()
+        
+        logger.info(f"Sessão {session_id} excluída pelo usuário {user_id}")
+        
+        return {"status": "success", "message": "Sessão excluída com sucesso."}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Erro ao excluir sessão {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno ao excluir a sessão.")
