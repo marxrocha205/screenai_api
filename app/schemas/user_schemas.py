@@ -2,7 +2,7 @@
 Schemas de validação de dados para a API utilizando Pydantic.
 Garante que os dados recebidos pelo Controller estejam corretos antes de processá-los.
 """
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 class UserCreate(BaseModel):
     """Schema para validação de criação de usuário."""
@@ -37,3 +37,18 @@ class UserProfileResponse(BaseModel):
 
     class Config:
         from_attributes = True  # Permite ler dados diretamente do modelo SQLAlchemy
+
+# ==========================================
+# NOVOS SCHEMAS (ÁREA ADMINISTRATIVA)
+# ==========================================
+
+class UserStatusUpdate(BaseModel):
+    """
+    Schema de validação para a atualização do estado do utilizador (Admin).
+    Isola a mutação garantindo que apenas o campo 'is_active' possa ser alterado,
+    protegendo contra injeção de outros dados (ex: is_admin).
+    """
+    is_active: bool = Field(
+        ..., 
+        description="O novo estado de ativação do utilizador (True para ativo, False para suspenso)."
+    )

@@ -3,7 +3,7 @@ Controlador Administrativo.
 Restrito a utilizadores com a flag is_admin=True.
 Fornece métricas e agregações para o painel de controlo do frontend.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -13,6 +13,7 @@ from app.core.security import verify_admin_token
 from app.models.user_model import User
 from app.models.subscription_model import Subscription
 from app.models.chat_model import ChatSession, ChatMessage
+from app.schemas.user_schemas import UserStatusUpdate
 
 logger = setup_logger(__name__)
 
@@ -140,3 +141,53 @@ def get_all_sessions(limit: int = 100, db: Session = Depends(get_db)):
         for s in sessions
     ]
     return {"status": "success", "data": results}
+
+router.patch("/users/{user_id}/status")
+def update_user_status(
+    user_id: int, 
+    payload: UserStatusUpdate, 
+    db: Session = Depends(get_db)
+):
+    """
+    Atualiza o estado (ativo/inativo) de um utilizador específico.
+    Ação restrita a administradores.
+    """
+    logger.info(f"Admin a solicitar alteração de estado para o utilizador ID: {user_id}. Novo estado: {payload.is_active}")
+    
+    # 1. Procurar o utilizador na base de dados
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        logger.warning(f"Falha na alteração: Utilizador ID {user_id} não encontrado.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Utilizador não encontrado no sistema."
+        )
+    
+    # Regra de negócio opcional, mas recomendada: impedir que um admin se desative a si próprio
+    # if user.is_admin:
+    #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Não pode desativar outro administrador.")
+
+    # 2. Atualizar o registo
+    user.is_active = payload.is_active
+    
+    try:
+        db.commit()
+        db.refresh(user)
+        logger.info(f"Estado do utilizador ID {user_id} atualizado com sucesso para {user.is_active}.")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Erro na base de dados ao atualizar o utilizador ID {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Ocorreu um erro interno ao guardar as alterações."
+        )
+
+    return {
+        "status": "success",
+        "message": "Estado do utilizador atualizado com sucesso.",
+        "data": {
+            "id": user.id,
+            "is_active": user.is_active
+        }
+    }
