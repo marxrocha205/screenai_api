@@ -8,13 +8,16 @@ import jwt
 from app.core.config import settings
 from app.core.logger import setup_logger
 
-from fastapi import WebSocketException, status
+from fastapi import WebSocketException, status, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+
 from sqlalchemy.orm import Session
 from app.models.user_model import User
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, get_db
 
 logger = setup_logger(__name__)
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # Token válido por 7 dias
 
@@ -75,3 +78,48 @@ def verify_ws_token(token: str) -> User:
     except jwt.PyJWTError as e:
         logger.error(f"Erro de validação JWT no WebSocket: {str(e)}")
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+    
+    
+def verify_admin_token(
+    token: str = Depends(oauth2_scheme), 
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    Dependência HTTP para proteger rotas de administração.
+    Valida o JWT e verifica ativamente na base de dados se o utilizador possui a flag is_admin=True.
+    """
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
+        user_id: int = payload.get("user_id")
+        
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Credenciais inválidas.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+    except jwt.ExpiredSignatureError:
+        logger.warning("Tentativa de acesso admin com token expirado.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expirado.")
+    except jwt.PyJWTError as e:
+        logger.error(f"Erro de validação JWT no Admin: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido.")
+
+    # Verificação rígida no banco de dados para privilégios de administrador
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilizador não encontrado.")
+    
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conta inativa.")
+        
+    if not user.is_admin:
+        logger.warning(f"Tentativa de violação de acesso (Admin) pelo utilizador ID {user_id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Acesso negado. Privilégios de administrador necessários."
+        )
+
+    return user

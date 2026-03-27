@@ -14,7 +14,7 @@ from app.models.plan_model import Plan
 from app.models.chat_model import ChatSession, ChatMessage
 
 # Importação de todos os Controladores
-from app.controllers import auth_controller, websocket_controller, chat_controller, user_controller
+from app.controllers import auth_controller, websocket_controller, chat_controller, user_controller, admin_controller
 
 logger = setup_logger(__name__)
 
@@ -45,6 +45,8 @@ app.include_router(chat_controller.router)
 
 # Rota do WebSocket (o prefixo já foi definido dentro do websocket_controller.py)
 app.include_router(websocket_controller.router)
+
+app.include_router(admin_controller.router)
 # -------------------------------------------------------------------
 
 @app.on_event("startup")
