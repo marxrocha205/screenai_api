@@ -55,6 +55,10 @@ async def send_multimodal_message(
         )
 
     uploaded_files_refs = []
+    image_bytes_inline: Optional[bytes] = None
+
+    # Tipos de imagem que serão processados inline (mais eficiente)
+    MIME_TIPOS_IMAGEM = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
     # 3. Processamento do arquivo (se existir)
     if file:
@@ -67,7 +71,7 @@ async def send_multimodal_message(
             
             tipos_permitidos = [
                 "application/pdf", "audio/mpeg", "audio/wav", 
-                "audio/ogg", "image/jpeg", "image/png"
+                "audio/ogg", "image/jpeg", "image/png", "image/webp", "image/gif"
             ]
             
             if mime_type not in tipos_permitidos:
@@ -76,13 +80,18 @@ async def send_multimodal_message(
                     detail="Tipo de arquivo não suportado. Envie PDF, Imagens ou Áudio."
                 )
 
-            # Upload para o Gemini
-            gemini_file_ref = await gemini_service.upload_file_to_gemini(
-                file_bytes=file_bytes, 
-                mime_type=mime_type, 
-                file_name=filename
-            )
-            uploaded_files_refs.append(gemini_file_ref)
+            if mime_type in MIME_TIPOS_IMAGEM:
+                # Imagens são enviadas inline (mesmo método do WebSocket — mais rápido)
+                image_bytes_inline = file_bytes
+                logger.info(f"Imagem '{filename}' será processada inline.")
+            else:
+                # Arquivos pesados (PDF, Áudio) vão para a File API do Gemini
+                gemini_file_ref = await gemini_service.upload_file_to_gemini(
+                    file_bytes=file_bytes, 
+                    mime_type=mime_type, 
+                    file_name=filename
+                )
+                uploaded_files_refs.append(gemini_file_ref)
             
         except HTTPException:
             raise
@@ -99,6 +108,7 @@ async def send_multimodal_message(
         plan_id=plan_id, # Requerido pelo _get_model_for_plan no gemini_service
         session_id=session_id,
         user_message=text or "",
+        image_bytes=image_bytes_inline,
         uploaded_files=uploaded_files_refs
     )
 
