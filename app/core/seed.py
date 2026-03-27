@@ -5,6 +5,8 @@ Garante que os Planos (Free, Pro, Premium) existam antes de qualquer utilizador 
 from sqlalchemy.orm import Session
 from app.models.plan_model import Plan
 from app.core.logger import setup_logger
+from app.core.security import get_password_hash
+from app.models.user_model import User
 
 logger = setup_logger(__name__)
 
@@ -48,3 +50,35 @@ def seed_plans(db: Session):
     except Exception as e:
         db.rollback()
         logger.error(f"Erro ao executar o seed de planos: {str(e)}")
+        
+def create_default_admin(db: Session):
+    """
+    Cria um usuário administrador padrão de acordo com o User model atual.
+    Removidos campos inexistentes: 'full_name' e 'credits'.
+    """
+    admin_email = "admin@frontscreen.ai"
+    
+    # Verifica se o usuário já existe
+    user = db.query(User).filter(User.email == admin_email).first()
+    
+    if not user:
+        logger.info(f"Iniciando criação do administrador: {admin_email}")
+        try:
+            admin_user = User(
+                email=admin_email,
+                hashed_password=get_password_hash("admin123"), # Altere via painel depois
+                is_active=True,
+                is_admin=True
+            )
+            # Nota: 'created_at' é preenchido automaticamente pelo banco (func.now())
+            
+            db.add(admin_user)
+            db.commit()
+            db.refresh(admin_user)
+            logger.info("Sucesso: Usuário administrador criado.")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Falha ao criar admin: {str(e)}")
+            raise e
+    else:
+        logger.info("Aviso: Usuário administrador já existe.")

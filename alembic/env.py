@@ -18,6 +18,8 @@ from app.models.user_model import User
 from app.models.plan_model import Plan             # NOVO
 from app.models.subscription_model import Subscription # NOVO
 
+from app.models.chat_model import ChatSession, ChatMessage
+
 config = context.config
 
 # Configuração de logs padrão do Alembic
