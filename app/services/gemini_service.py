@@ -31,20 +31,21 @@ class GeminiService:
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             }
             
-            self.system_instruction = self._load_system_prompt()
+            self.system_instruction_base = self._load_prompt('system_prompt.txt')
+            self.system_instruction_vision = self._load_prompt('vision_prompt.txt')
             logger.info("Serviço ScreenAI (Base de Arbitragem) inicializado com sucesso.")
         except Exception as e:
             logger.error(f"Falha ao inicializar o Gemini API: {str(e)}")
             raise
 
-    def _load_system_prompt(self) -> str:
-        prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'system_prompt.txt')
+    def _load_prompt(self, filename: str) -> str:
+        prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', filename)
         try:
             with open(prompt_path, 'r', encoding='utf-8') as file:
                 return file.read().strip()
         except FileNotFoundError:
             logger.error(f"Arquivo de prompt não encontrado em {prompt_path}.")
-            raise
+            return "" # Fallback seguro
 
     def _get_model_for_plan(self, plan_id: int) -> str:
         """
@@ -110,11 +111,15 @@ class GeminiService:
         model_name = self._get_model_for_plan(plan_id)
         logger.info(f"Processando requisição multimodal para usuário {user_id}. Roteado para: {model_name}")
         
-        # 2. Instancia o modelo selecionado com o prompt correto
+        # 2. Define instrução de sistema dinâmica (Base + Visão se houver imagem)
+        current_system_prompt = self.system_instruction_base
+        if image_bytes:
+            current_system_prompt += "\n" + self.system_instruction_vision
+
         model = genai.GenerativeModel(
             model_name=model_name,
             safety_settings=self.safety_settings,
-            system_instruction=self.system_instruction
+            system_instruction=current_system_prompt
         )
         
         history = await redis_service.get_history(user_id, session_id)
