@@ -1,11 +1,12 @@
 """
 Controlador de rotas para o WebSocket.
 Processa payloads multimodais (Texto + Imagem + Áudio), valida Rate Limit e cobra os Créditos.
-Agora com persistência de Histórico de Conversas e Isolamento por Sessão.
+Agora com persistência de Histórico de Conversas, Isolamento por Sessão e Suporte a Barge-in.
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import base64
 import json
+import asyncio
 
 from app.services.websocket_manager import manager
 from app.core.security import verify_ws_token
@@ -42,31 +43,29 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     
     # Inicia a ligação ao PostgreSQL que viverá durante toda a sessão WebSocket
     db = SessionLocal()
+    current_task = None
     
-    try:
-        while True:
-            # 1. Recebe o JSON do frontend
-            data = await websocket.receive_json()
+    async def process_message(payload: dict):
+        # 2. Rate Limiting
+        is_allowed = await redis_service.check_rate_limit(
+            user_id=user_id, max_requests=10, window_seconds=60
+        )
+        
+        if not is_allowed:
+            logger.warning(f"Bloqueando mensagem do usuário {user_id} via WebSocket (Rate Limit).")
+            await manager.send_personal_message({
+                "type": "error",
+                "message": "Você enviou muitas mensagens rapidamente. Por favor, aguarde um minuto."
+            }, user_id)
+            return
             
-            # 2. Rate Limiting
-            is_allowed = await redis_service.check_rate_limit(
-                user_id=user_id, max_requests=10, window_seconds=60
-            )
-            
-            if not is_allowed:
-                logger.warning(f"Bloqueando mensagem do usuário {user_id} via WebSocket (Rate Limit).")
-                await manager.send_personal_message({
-                    "type": "error",
-                    "message": "Você enviou muitas mensagens rapidamente. Por favor, aguarde um minuto."
-                }, user_id)
-                continue
-                
-            # Extrai os dados (INCLUINDO O SESSION_ID)
-            session_id_front = data.get("session_id") # Pode ser nulo
-            user_text = data.get("text", "")
-            image_b64 = data.get("image_base64")
-            audio_b64 = data.get("audio_base64")
+        # Extrai os dados (INCLUINDO O SESSION_ID)
+        session_id_front = payload.get("session_id") # Pode ser nulo
+        user_text = payload.get("text", "")
+        image_b64 = payload.get("image_base64")
+        audio_b64 = payload.get("audio_base64")
 
+        try:
             # 3. Transcrição de Áudio STT
             if audio_b64:
                 texto_transcrito = await stt_service.transcribe_base64(audio_b64)
@@ -87,7 +86,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                 except Exception as e:
                     logger.error(f"Falha na decodificação Base64 da imagem: {str(e)}")
                     await manager.send_personal_message({"type": "error", "message": "Erro no formato da imagem enviada."}, user_id)
-                    continue
+                    return
 
             # 5. O PEDÁGIO (SISTEMA DE COBRANÇA E CRÉDITOS)
             has_image = bool(image_bytes)
@@ -98,85 +97,111 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                     "type": "error",
                     "message": f"Créditos insuficientes. Esta ação custa {custo_total} créditos. Faça um upgrade do seu plano."
                 }, user_id)
-                continue 
+                return 
 
-            try:
-                # 6. Processamento da IA passando o session_id
-                resposta_ia = await gemini_service.generate_response(
-                    user_id=user_id,
-                    plan_id=plan_id,
-                    session_id=session_id_front, # A MÁGICA COMEÇA AQUI
-                    user_message=user_text,
-                    image_bytes=image_bytes
-                )
-                
-                # Trata erros em que o gemini_service retorna apenas uma string, ou quando texto/imagem estão vazios (ex: falha no STT)
-                if isinstance(resposta_ia, str):
-                    await manager.send_personal_message({
-                        "type": "error",
-                        "message": resposta_ia
-                    }, user_id)
-                    continue
-
-                # Extrai os dados retornados pelo Gemini Service atualizado
-                id_da_conversa = resposta_ia["session_id"]
-                texto_resposta = resposta_ia["text"]
-                
-                # -------------------------------------------------------------------
-                # 7. PERSISTÊNCIA NO POSTGRESQL (A MÁGICA DA BARRA LATERAL)
-                # -------------------------------------------------------------------
-                try:
-                    # Se o front não mandou ID, é uma nova conversa
-                    if not session_id_front:
-                        titulo = user_text[:30] + "..." if user_text else "Nova conversa multimodal"
-                        nova_sessao = ChatSession(id=id_da_conversa, user_id=user_id, title=titulo)
-                        db.add(nova_sessao)
-                        db.commit() # Cria a sessão mãe primeiro
-                    
-                    # Guarda a mensagem do usuário
-                    if user_text or image_bytes:
-                        texto_salvar = user_text if user_text else "[Imagem/Áudio Enviado]"
-                        msg_user = ChatMessage(session_id=id_da_conversa, role="user", content=texto_salvar)
-                        db.add(msg_user)
-                        
-                    # Guarda a mensagem da IA
-                    msg_ia = ChatMessage(session_id=id_da_conversa, role="assistant", content=texto_resposta)
-                    db.add(msg_ia)
-                    
-                    db.commit()
-                except Exception as db_err:
-                    logger.error(f"Erro ao salvar histórico do WS no banco: {str(db_err)}")
-                    db.rollback()
-                # -------------------------------------------------------------------
-                
-                # 8. Processamento da IA (Voz)
-                audio_b64_response = await tts_service.generate_audio_base64(
-                    text=texto_resposta, 
-                    plan_id=plan_id
-                )
-                
-                # 9. Cobrança e Saldo
-                billing_service.deduct_credits(db, user_id, amount=custo_total)
-                assinatura = db.query(Subscription).filter(Subscription.user_id == user_id).first()
-                saldo_atualizado = assinatura.remaining_credits
-                
-                # 10. Retorno ao Frontend
-                await manager.send_personal_message({
-                    "type": "ai_response",
-                    "message": texto_resposta,
-                    "audio_base64": audio_b64_response,
-                    "remaining_credits": saldo_atualizado,
-                    "session_id": id_da_conversa # A BARRA LATERAL PRECISA DISSO PARA PISCAR
-                }, user_id)
-
-            except Exception as e:
-                logger.error(f"Erro no processamento da IA para o usuário {user_id}: {str(e)}")
-                await manager.send_personal_message({"type": "error", "message": "Erro interno ao processar sua requisição."}, user_id)
-                db.rollback()
+            # 6. Processamento da IA passando o session_id
+            resposta_ia = await gemini_service.generate_response(
+                user_id=user_id,
+                plan_id=plan_id,
+                session_id=session_id_front, # A MÁGICA COMEÇA AQUI
+                user_message=user_text,
+                image_bytes=image_bytes
+            )
             
+            # Trata erros em que o gemini_service retorna apenas uma string, ou quando texto/imagem estão vazios (ex: falha no STT)
+            if isinstance(resposta_ia, str):
+                await manager.send_personal_message({
+                    "type": "error",
+                    "message": resposta_ia
+                }, user_id)
+                return
+
+            # Extrai os dados retornados pelo Gemini Service atualizado
+            id_da_conversa = resposta_ia["session_id"]
+            texto_resposta = resposta_ia["text"]
+            
+            # -------------------------------------------------------------------
+            # 7. PERSISTÊNCIA NO POSTGRESQL (A MÁGICA DA BARRA LATERAL)
+            # -------------------------------------------------------------------
+            try:
+                # Se o front não mandou ID, é uma nova conversa
+                if not session_id_front:
+                    titulo = user_text[:30] + "..." if user_text else "Nova conversa multimodal"
+                    nova_sessao = ChatSession(id=id_da_conversa, user_id=user_id, title=titulo)
+                    db.add(nova_sessao)
+                    db.commit() # Cria a sessão mãe primeiro
+                
+                # Guarda a mensagem do usuário
+                if user_text or image_bytes:
+                    texto_salvar = user_text if user_text else "[Imagem/Áudio Enviado]"
+                    msg_user = ChatMessage(session_id=id_da_conversa, role="user", content=texto_salvar)
+                    db.add(msg_user)
+                    
+                # Guarda a mensagem da IA
+                msg_ia = ChatMessage(session_id=id_da_conversa, role="assistant", content=texto_resposta)
+                db.add(msg_ia)
+                
+                db.commit()
+            except Exception as db_err:
+                logger.error(f"Erro ao salvar histórico do WS no banco: {str(db_err)}")
+                db.rollback()
+            # -------------------------------------------------------------------
+            
+            # 8. Processamento da IA (Voz)
+            audio_b64_response = await tts_service.generate_audio_base64(
+                text=texto_resposta, 
+                plan_id=plan_id
+            )
+            
+            # 9. Cobrança e Saldo
+            billing_service.deduct_credits(db, user_id, amount=custo_total)
+            assinatura = db.query(Subscription).filter(Subscription.user_id == user_id).first()
+            saldo_atualizado = assinatura.remaining_credits
+            
+            # 10. Retorno ao Frontend
+            await manager.send_personal_message({
+                "type": "ai_response",
+                "message": texto_resposta,
+                "audio_base64": audio_b64_response,
+                "remaining_credits": saldo_atualizado,
+                "session_id": id_da_conversa # A BARRA LATERAL PRECISA DISSO PARA PISCAR
+            }, user_id)
+
+        except asyncio.CancelledError:
+            logger.info(f"[Barge-in] Processamento de IA interrompido ativamente pelo usuário {user_id}. Operação cancelada.")
+            db.rollback()
+            raise
+        except Exception as e:
+            logger.error(f"Erro no processamento da IA para o usuário {user_id}: {str(e)}")
+            await manager.send_personal_message({"type": "error", "message": "Erro interno ao processar sua requisição."}, user_id)
+            db.rollback()
+
+    try:
+        while True:
+            # 1. Recebe o JSON do frontend
+            data = await websocket.receive_json()
+            
+            msg_type = data.get("type")
+            if msg_type == "cancel_generation":
+                if current_task and not current_task.done():
+                    logger.info(f"[Barge-in] Sinal 'cancel_generation' recebido. Abortando resposa para o usuário {user_id}...")
+                    current_task.cancel()
+                continue
+                
+            # Se for uma nova requisição (áudio, texto, imagem), cancela a anterior se estiver rodando
+            if current_task and not current_task.done():
+                current_task.cancel()
+                logger.info(f"Cancelando task anterior do usuário {user_id} para nova entrada...")
+                
+            # Dispara o processamento em background (não bloqueia o while loop)
+            current_task = asyncio.create_task(process_message(data))
+
     except WebSocketDisconnect:
         logger.warning(f"Usuário {user_id} encerrou a conexão inesperadamente.")
         manager.disconnect(websocket, user_id) 
     finally:
+        # Cancela qualquer task órfã ao fechar conexão
+        if current_task and not current_task.done():
+            current_task.cancel()
         # Garante o fechamento da conexão com o banco ao sair da aba
         db.close()

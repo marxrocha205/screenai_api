@@ -25,6 +25,7 @@ def setup_logger(name: str) -> logging.Logger:
         # O StreamHandler joga os logs para a saída padrão (stdout),
         # que é a melhor prática para aplicações conteinerizadas (Docker/Railway).
         handler = logging.StreamHandler(sys.stdout)
+
         
         # Formato: Data Hora - Nome do Módulo - Nível (INFO, ERROR) - Mensagem
         formatter = logging.Formatter(
