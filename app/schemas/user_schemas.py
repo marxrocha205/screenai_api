@@ -52,3 +52,17 @@ class UserStatusUpdate(BaseModel):
         ..., 
         description="O novo estado de ativação do utilizador (True para ativo, False para suspenso)."
     )
+    
+class AdminCreditUpdate(BaseModel):
+    """
+    Schema de validação para a injeção ou remoção manual de créditos.
+    """
+    amount: int = Field(
+        ..., 
+        description="Quantidade de créditos a adicionar (positivo) ou remover (negativo)."
+    )
+    reason: str = Field(
+        ..., 
+        min_length=5,
+        description="Justificação obrigatória para a auditoria (ex: 'Reembolso por falha na API')."
+    )
