@@ -58,6 +58,13 @@ class ConnectionManager:
             except Exception as e:
                 logger.error(f"Erro ao enviar mensagem para usuário {user_id}: {str(e)}")
                 self.disconnect(websocket, user_id)
+                
+    def get_active_stats(self):
+        """Retorna estatísticas das conexões para o painel de admin."""
+        return {
+            "total_active": len(self.active_connections),
+            "active_users": [user_id for user_id in self.active_connections.keys()]
+        }
 
 # Instância Singleton
 manager = ConnectionManager()
