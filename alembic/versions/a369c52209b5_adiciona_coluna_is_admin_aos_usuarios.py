@@ -19,11 +19,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Drops condicionais
     op.drop_index('ix_chat_messages_id', table_name='chat_messages', if_exists=True)
-    op.drop_table('chat_messages')
-    op.drop_index('ix_chat_sessions_id', table_name='chat_sessions', if_exists=True)  # <- adicionar if_exists=True
-    op.drop_table('chat_sessions')
+    op.drop_table('chat_messages', if_exists=True)
+    op.drop_index('ix_chat_sessions_id', table_name='chat_sessions', if_exists=True)
+    op.drop_table('chat_sessions', if_exists=True)
 
+    # Adiciona a coluna is_admin (razão original da migration)
+    op.add_column('users', sa.Column('is_admin', sa.Boolean(), nullable=False, server_default='false'))
 
 def downgrade() -> None:
     """Downgrade schema."""
