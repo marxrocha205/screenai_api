@@ -17,4 +17,4 @@ openai
 asyncpg==0.29.0
 greenlet==3.0.3
 orjson
-
+psycopg2-binary
