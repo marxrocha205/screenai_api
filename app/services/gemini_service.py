@@ -84,88 +84,98 @@ class GeminiService:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    async def generate_response(
-        self, 
-        user_id: int, 
-        plan_id: int, # NOVO: ID do plano injetado pelo WebSocket
-        session_id : Optional[str] = None,
-        user_message: str = "", 
+    async def generate_response_stream(
+        self,
+        user_id: int,
+        plan_id: int,
+        session_id: Optional[str] = None,
+        user_message: str = "",
         image_bytes: Optional[bytes] = None,
         uploaded_files: Optional[List[Any]] = None
-    ) -> Dict[str, str]:
+    ):
         """
-        Gera resposta mantendo o histórico, suportando texto, imagem (inline) e arquivos pesados (File API).
-        Roteia dinamicamente o modelo de IA baseado no plano do usuário.
+        Streaming REAL do Gemini (token por token)
         """
+
         if not session_id:
             session_id = str(uuid.uuid4())
-            logger.info(f"Nova sessão de chat criada: {session_id} para usuário {user_id}")
-            
-        # 1. Roteamento Inteligente
+
         model_name = self._get_model_for_plan(plan_id)
-        logger.info(f"Processando requisição multimodal para usuário {user_id}. Roteado para: {model_name}")
-        
-        # 2. Instancia o modelo selecionado com o prompt correto
+
         model = genai.GenerativeModel(
             model_name=model_name,
             safety_settings=self.safety_settings,
             system_instruction=self.system_instruction
         )
-        
+
         history = await redis_service.get_history(user_id, session_id)
         chat_session = model.start_chat(history=history)
-        
-        # O payload pode conter strings, imagens PIL ou referências a arquivos no Google (uploaded_files)
+
         content_payload: List[Any] = []
-        
-        # Adiciona arquivos pesados (Áudio/Documentos) processados previamente
+
         if uploaded_files:
             content_payload.extend(uploaded_files)
 
-        # Adiciona imagem inline (Prints de tela do WebSocket)
         if image_bytes:
             try:
                 img = Image.open(BytesIO(image_bytes))
                 content_payload.append(img)
             except Exception as e:
-                logger.error(f"Erro ao processar imagem para usuário {user_id}: {str(e)}")
-                return "Tive um problema técnico ao tentar ver sua tela."
+                logger.error(f"Erro ao processar imagem: {str(e)}")
 
-        # Adiciona o texto
         if user_message:
             content_payload.append(user_message)
-            
+
         if not content_payload:
-             return "Como posso ajudar?"
+            yield {
+                "type": "end",
+                "text": "",
+                "session_id": session_id
+            }
+            return
+
+        full_text = ""
 
         try:
-            response = chat_session.send_message(content_payload)
-            
-            if response.text:
-                resposta_final = response.text
-                
-                # Resumo visual para o histórico não ficar poluído com objetos de arquivo
-                resumo_interacao = user_message
-                if uploaded_files:
-                    resumo_interacao += " [Usuário enviou arquivos]"
-                if image_bytes:
-                    resumo_interacao += " [Usuário enviou imagem da tela]"
-                    
-                await redis_service.save_interaction(
-                    user_id=user_id, 
-                    session_id=session_id,
-                    user_message=resumo_interacao.strip(), 
-                    model_response=resposta_final
-                )
-                
-                return{
-                    "text": resposta_final,
-                    "session_id": session_id
-                }
-            else:
-                return {"text": "Ops, não consegui processar isso.", "session_id": session_id}
+            stream = chat_session.send_message(
+                content_payload,
+                stream=True
+            )
+
+            for chunk in stream:
+                if not chunk or not hasattr(chunk, "text"):
+                    continue
+
+                if chunk.text:
+                    full_text += chunk.text
+
+                    yield {
+                        "type": "chunk",
+                        "text": chunk.text,
+                        "full": full_text,
+                        "session_id": session_id
+                    }
+
+            # salva histórico no final
+            await redis_service.save_interaction(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=user_message,
+                model_response=full_text
+            )
+
+            yield {
+                "type": "end",
+                "text": full_text,
+                "session_id": session_id
+            }
+
         except Exception as e:
-            logger.error(f"Erro na comunicação com Gemini para usuário {user_id}: {str(e)}")
-            return "Estou com uma instabilidade técnica agora."
+            logger.error(f"[STREAM ERROR] {str(e)}")
+
+            yield {
+                "type": "error",
+                "message": "Erro ao gerar resposta."
+            }
 
 gemini_service = GeminiService()
