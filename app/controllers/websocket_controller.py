@@ -29,7 +29,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
         while True:
             data = await websocket.receive_json()
 
-            # 🔴 STOP PRIMEIRO (ANTES DE TUDO)
+            # 🔴 STOP primeiro
             if data.get("type") == "stop":
                 session_id = data.get("session_id")
 
@@ -75,7 +75,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
                     }, user_id)
                     continue
 
-            # 🚀 envia job
+            # 🚀 fila
             await queue_service.enqueue({
                 "user_id": user_id,
                 "plan_id": plan_id,
