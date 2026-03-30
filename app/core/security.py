@@ -11,9 +11,10 @@ from app.core.logger import setup_logger
 from fastapi import WebSocketException, status, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user_model import User
-from app.core.database import SessionLocal, get_db
+from app.core.database import get_db
 
 logger = setup_logger(__name__)
 
@@ -80,9 +81,9 @@ def verify_ws_token(token: str) -> User:
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
     
     
-def verify_admin_token(
+async def verify_admin_token(
     token: str = Depends(oauth2_scheme), 
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db) # Usa AsyncSession
 ) -> User:
     """
     Dependência HTTP para proteger rotas de administração.
@@ -107,11 +108,11 @@ def verify_admin_token(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido.")
 
     # Verificação rígida no banco de dados para privilégios de administrador
-    user = db.query(User).filter(User.id == user_id).first()
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalars().first()
     
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilizador não encontrado.")
-    
+        raise HTTPException(status_code=404, detail="Utilizador não encontrado.")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conta inativa.")
         
