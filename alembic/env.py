@@ -31,12 +31,16 @@ target_metadata = Base.metadata
 
 def get_url():
     """
-    Busca a URL do banco de dados das nossas configurações centrais (Pydantic).
-    Converte postgres:// para postgresql:// caso a Railway envie o formato antigo.
+    Pega a DATABASE_URL direto do ambiente (Railway).
     """
-    url = settings.database_url
+    url = os.getenv("DATABASE_URL")
+
+    if not url:
+        raise ValueError("DATABASE_URL não encontrada no ambiente!")
+
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
+
     return url
 
 def run_migrations_offline() -> None:
