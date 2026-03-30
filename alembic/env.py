@@ -30,16 +30,18 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 def get_url():
-    """
-    Pega a DATABASE_URL direto do ambiente (Railway).
-    """
     url = os.getenv("DATABASE_URL")
 
     if not url:
-        raise ValueError("DATABASE_URL não encontrada no ambiente!")
+        raise ValueError("DATABASE_URL não encontrada!")
 
+    # Railway antigo
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
+
+    # 🔥 ESSA LINHA RESOLVE SEU ERRO ATUAL
+    if "asyncpg" in url:
+        url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
     return url
 
