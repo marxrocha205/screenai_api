@@ -28,7 +28,6 @@ app = FastAPI(
 origins = [
     "http://localhost:3000",
     "http://localhost:5173",
-    "https://screenaiapi-production.up.railway.app",
     # Adicione abaixo o domínio do seu frontend quando fizer o deploy
 ]
 
