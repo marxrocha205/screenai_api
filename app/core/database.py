@@ -12,8 +12,12 @@ logger = setup_logger(__name__)
 # O SQLAlchemy exige que URLs do Postgres comecem com 'postgresql://'
 # A Railway às vezes fornece 'postgres://', então fazemos a conversão de segurança.
 SQLALCHEMY_DATABASE_URL = settings.database_url
+# Normalização para garantir protocolo síncrono (psycopg2)
 if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
+# Se por acaso vier com o driver assíncrono, removemos para o SQLAlchemy síncrono funcionar
+elif "+asyncpg" in SQLALCHEMY_DATABASE_URL:
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("+asyncpg", "")
 
 try:
     # Cria o motor de conexão. Pool pre_ping verifica se a conexão está ativa antes de usá-la.
