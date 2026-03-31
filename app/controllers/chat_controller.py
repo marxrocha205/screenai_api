@@ -5,8 +5,7 @@ integrando-se ao mesmo histórico de conversa (Redis) utilizado pelo WebSocket.
 """
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Request
 from typing import Optional
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.logger import setup_logger
 from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
@@ -25,7 +24,7 @@ async def send_multimodal_message(
     session_id: Optional[str] = Form(None),
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
-    db: AsyncSession = Depends(get_db) # INJETAMOS A SESSÃO DO BANCO DE DADOS
+    db: Session = Depends(get_db) # INJETAMOS A SESSÃO DO BANCO DE DADOS
 ):
     """
     Recebe uma mensagem de texto e/ou um arquivo (Áudio, PDF, Imagem).
@@ -129,7 +128,7 @@ async def send_multimodal_message(
                 title=titulo
             )
             db.add(nova_sessao)
-            await db.commit() # Comita para a sessão existir antes de inserir as mensagens
+            db.commit() # Comita para a sessão existir antes de inserir as mensagens
             logger.info(f"Sessão {id_da_conversa} salva no DB.")
 
         # Salva a mensagem do usuário (texto ou sinalização de arquivo)
@@ -150,10 +149,10 @@ async def send_multimodal_message(
         db.add(msg_ai)
         
         # Comita as mensagens no banco de dados
-        await db.commit()
+        db.commit()
     except Exception as db_err:
         logger.error(f"Erro ao salvar histórico no banco: {str(db_err)}")
-        await db.rollback() # Previne travamentos no banco caso algo dê errado
+        db.rollback() # Previne travamentos no banco caso algo dê errado
 
     # 6. Retorna o resultado para o frontend
     return {
@@ -207,7 +206,7 @@ async def transcribe_voice(
             detail="Erro interno ao transcrever o áudio."
         )  
 @router.get("/sessions")
-async def get_chat_sessions(request: Request, db: AsyncSession = Depends(get_db)):
+async def get_chat_sessions(request: Request, db: Session = Depends(get_db)):
     """
     Busca real no PostgreSQL: Retorna a lista de todas as conversas do utilizador.
     """
@@ -219,12 +218,7 @@ async def get_chat_sessions(request: Request, db: AsyncSession = Depends(get_db)
     user = verify_ws_token(token)
     
     # Busca todas as sessões do utilizador, ordenadas pela mais recente
-    result = await db.execute(
-        select(ChatSession)
-        .filter(ChatSession.user_id == user["id"])
-        .order_by(ChatSession.updated_at.desc())
-    )
-    sessions = result.scalars().all()
+    sessions = db.query(ChatSession).filter(ChatSession.user_id == user["id"]).order_by(ChatSession.updated_at.desc()).all()
     
     return [
         {
@@ -236,7 +230,7 @@ async def get_chat_sessions(request: Request, db: AsyncSession = Depends(get_db)
     ]
 
 @router.get("/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def get_session_messages(session_id: str, request: Request, db: Session = Depends(get_db)):
     """
     Busca real no PostgreSQL: Retorna as mensagens de uma conversa específica.
     """
@@ -248,22 +242,12 @@ async def get_session_messages(session_id: str, request: Request, db: AsyncSessi
     user = verify_ws_token(token)
 
     # 1. Verifica se a sessão existe e se pertence a este utilizador (Segurança)
-    result_session = await db.execute(
-        select(ChatSession)
-        .filter(ChatSession.id == session_id, ChatSession.user_id == user["id"])
-    )
-    session = result_session.scalars().first()
-    
+    session = db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == user["id"]).first()
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada ou não pertence ao utilizador.")
     
     # 2. Busca todas as mensagens desta sessão, em ordem cronológica
-    result_msgs = await db.execute(
-        select(ChatMessage)
-        .filter(ChatMessage.session_id == session_id)
-        .order_by(ChatMessage.created_at.asc())
-    )
-    messages = result_msgs.scalars().all()
+    messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc()).all()
     
     return [
         {
@@ -274,7 +258,7 @@ async def get_session_messages(session_id: str, request: Request, db: AsyncSessi
     ]
 
 @router.delete("/sessions/{session_id}")
-async def delete_chat_session(session_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def delete_chat_session(session_id: str, request: Request, db: Session = Depends(get_db)):
     """
     Exclui uma sessão de chat e todas as suas mensagens associadas.
     """
@@ -289,11 +273,7 @@ async def delete_chat_session(session_id: str, request: Request, db: AsyncSessio
     user_id = user["id"] if isinstance(user, dict) else user.id
 
     # Busca a sessão e garante que o usuário logado é o dono
-    result = await db.execute(
-        select(ChatSession)
-        .filter(ChatSession.id == session_id, ChatSession.user_id == user_id)
-    )
-    session = result.scalars().first()
+    session = db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == user_id).first()
     
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada ou não pertence ao utilizador.")
@@ -301,13 +281,13 @@ async def delete_chat_session(session_id: str, request: Request, db: AsyncSessio
     try:
         # Deleta a sessão_mãe. As mensagens vinculadas serão apagadas sozinhas
         # devido à relação cascade="all, delete-orphan" no model.
-        await db.delete(session)
-        await db.commit()
+        db.delete(session)
+        db.commit()
         
         logger.info(f"Sessão {session_id} excluída pelo utilizador {user_id}.")
         return {"status": "success", "message": "Conversa apagada."}
         
     except Exception as e:
-        await db.rollback()
+        db.rollback()
         logger.error(f"Erro ao excluir sessão {session_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro interno ao apagar conversa.")
