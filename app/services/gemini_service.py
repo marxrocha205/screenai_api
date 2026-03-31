@@ -11,7 +11,6 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from PIL import Image
 from io import BytesIO
 from typing import List, Optional,  Any, Dict
-import anyio
 
 from app.core.config import settings
 from app.core.logger import setup_logger
@@ -31,21 +30,20 @@ class GeminiService:
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             }
             
-            self.system_instruction_base = self._load_prompt('system_prompt.txt')
-            self.system_instruction_vision = self._load_prompt('vision_prompt.txt')
+            self.system_instruction = self._load_system_prompt()
             logger.info("Serviço ScreenAI (Base de Arbitragem) inicializado com sucesso.")
         except Exception as e:
             logger.error(f"Falha ao inicializar o Gemini API: {str(e)}")
             raise
 
-    def _load_prompt(self, filename: str) -> str:
-        prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', filename)
+    def _load_system_prompt(self) -> str:
+        prompt_path = os.path.join(os.path.dirname(__file__), '..', 'prompts', 'system_prompt.txt')
         try:
             with open(prompt_path, 'r', encoding='utf-8') as file:
                 return file.read().strip()
         except FileNotFoundError:
             logger.error(f"Arquivo de prompt não encontrado em {prompt_path}.")
-            return "" # Fallback seguro
+            raise
 
     def _get_model_for_plan(self, plan_id: int) -> str:
         """
@@ -75,11 +73,7 @@ class GeminiService:
 
         try:
             # Faz o upload para os servidores do Google (expira automaticamente em 48h)
-            # anyio.to_thread.run_sync evita que a chamada bloqueante trave o loop do FastAPI
-            # Usamos uma função lambda para passar os argumentos corretamente (path e mime_type)
-            uploaded_file = await anyio.to_thread.run_sync(
-                lambda: genai.upload_file(path=temp_path, mime_type=mime_type)
-            )
+            uploaded_file = genai.upload_file(path=temp_path, mime_type=mime_type)
             logger.debug(f"Upload concluído. URI do arquivo: {uploaded_file.uri}")
             return uploaded_file
         except Exception as e:
@@ -90,93 +84,98 @@ class GeminiService:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    async def generate_response(
-        self, 
-        user_id: int, 
-        plan_id: int, # NOVO: ID do plano injetado pelo WebSocket
-        session_id : Optional[str] = None,
-        user_message: str = "", 
+    async def generate_response_stream(
+        self,
+        user_id: int,
+        plan_id: int,
+        session_id: Optional[str] = None,
+        user_message: str = "",
         image_bytes: Optional[bytes] = None,
         uploaded_files: Optional[List[Any]] = None
-    ) -> Dict[str, str]:
+    ):
         """
-        Gera resposta mantendo o histórico, suportando texto, imagem (inline) e arquivos pesados (File API).
-        Roteia dinamicamente o modelo de IA baseado no plano do usuário.
+        Streaming REAL do Gemini (token por token)
         """
+
         if not session_id:
             session_id = str(uuid.uuid4())
-            logger.info(f"Nova sessão de chat criada: {session_id} para usuário {user_id}")
-            
-        # 1. Roteamento Inteligente
+
         model_name = self._get_model_for_plan(plan_id)
-        logger.info(f"Processando requisição multimodal para usuário {user_id}. Roteado para: {model_name}")
-        
-        # 2. Define instrução de sistema dinâmica (Base + Visão se houver imagem)
-        current_system_prompt = self.system_instruction_base
-        if image_bytes:
-            current_system_prompt += "\n" + self.system_instruction_vision
 
         model = genai.GenerativeModel(
             model_name=model_name,
             safety_settings=self.safety_settings,
-            system_instruction=current_system_prompt
+            system_instruction=self.system_instruction
         )
-        
+
         history = await redis_service.get_history(user_id, session_id)
         chat_session = model.start_chat(history=history)
-        
-        # O payload pode conter strings, imagens PIL ou referências a arquivos no Google (uploaded_files)
+
         content_payload: List[Any] = []
-        
-        # Adiciona arquivos pesados (Áudio/Documentos) processados previamente
+
         if uploaded_files:
             content_payload.extend(uploaded_files)
 
-        # Adiciona imagem inline (Prints de tela do WebSocket)
         if image_bytes:
             try:
                 img = Image.open(BytesIO(image_bytes))
                 content_payload.append(img)
             except Exception as e:
-                logger.error(f"Erro ao processar imagem para usuário {user_id}: {str(e)}")
-                return {"text": "Tive um problema técnico ao tentar ver sua tela.", "session_id": session_id}
+                logger.error(f"Erro ao processar imagem: {str(e)}")
 
-        # Adiciona o texto
         if user_message:
             content_payload.append(user_message)
-            
+
         if not content_payload:
-             return {"text": "Como posso ajudar?", "session_id": session_id}
+            yield {
+                "type": "end",
+                "text": "",
+                "session_id": session_id
+            }
+            return
+
+        full_text = ""
 
         try:
-            # anyio.to_thread.run_sync evita que o processamento pesado do Gemini bloqueie o servidor
-            response = await anyio.to_thread.run_sync(lambda: chat_session.send_message(content_payload))
-            
-            if response.text:
-                resposta_final = response.text
-                
-                # Resumo visual para o histórico não ficar poluído com objetos de arquivo
-                resumo_interacao = user_message
-                if uploaded_files:
-                    resumo_interacao += " [Usuário enviou arquivos]"
-                if image_bytes:
-                    resumo_interacao += " [Usuário enviou imagem da tela]"
-                    
-                await redis_service.save_interaction(
-                    user_id=user_id, 
-                    session_id=session_id,
-                    user_message=resumo_interacao.strip(), 
-                    model_response=resposta_final
-                )
-                
-                return{
-                    "text": resposta_final,
-                    "session_id": session_id
-                }
-            else:
-                return {"text": "Ops, não consegui processar isso.", "session_id": session_id}
+            stream = chat_session.send_message(
+                content_payload,
+                stream=True
+            )
+
+            for chunk in stream:
+                if not chunk or not hasattr(chunk, "text"):
+                    continue
+
+                if chunk.text:
+                    full_text += chunk.text
+
+                    yield {
+                        "type": "chunk",
+                        "text": chunk.text,
+                        "full": full_text,
+                        "session_id": session_id
+                    }
+
+            # salva histórico no final
+            await redis_service.save_interaction(
+                user_id=user_id,
+                session_id=session_id,
+                user_message=user_message,
+                model_response=full_text
+            )
+
+            yield {
+                "type": "end",
+                "text": full_text,
+                "session_id": session_id
+            }
+
         except Exception as e:
-            logger.error(f"Erro na comunicação com Gemini para usuário {user_id}: {str(e)}")
-            return {"text": "Estou com uma instabilidade técnica agora.", "session_id": session_id}
+            logger.error(f"[STREAM ERROR] {str(e)}")
+
+            yield {
+                "type": "error",
+                "message": "Erro ao gerar resposta."
+            }
 
 gemini_service = GeminiService()
