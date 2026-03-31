@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     gemini_api_key: str
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str
-    cors_allowed_origins: str = "*" # Comma separated list of origins
 
     class Config:
         env_file = ".env"
