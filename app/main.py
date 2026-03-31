@@ -24,13 +24,21 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configuração de CORS para permitir que o frontend local acesse a API
+# Configuração de CORS - Listagem de origens permitidas
+origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://screenaiapi-production.up.railway.app",
+    # Adicione abaixo o domínio do seu frontend quando fizer o deploy
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, substitua pelo domínio real do seu frontend (ex: "https://meuscreenai.com")
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # -------------------------------------------------------------------
