@@ -6,44 +6,31 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 from app.core.logger import setup_logger
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 logger = setup_logger(__name__)
 
+# O SQLAlchemy exige que URLs do Postgres comecem com 'postgresql://'
+# A Railway às vezes fornece 'postgres://', então fazemos a conversão de segurança.
+SQLALCHEMY_DATABASE_URL = settings.database_url
+if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# O driver assíncrono é 'postgresql+asyncpg'
-DATABASE_URL = settings.database_url
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
-elif DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 try:
-    # Engine assíncrono com pool otimizado
-    engine = create_async_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_size=20,
-        max_overflow=10
-    )
-    
-    # Gerador de sessões assíncronas
-    AsyncSessionLocal = async_sessionmaker(
-        bind=engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autoflush=False
-    )
-    
+    # Cria o motor de conexão. Pool pre_ping verifica se a conexão está ativa antes de usá-la.
+    engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base = declarative_base()
-    logger.info("Motor de base de dados ASSÍNCRONO inicializado.")
+    logger.info("Motor de banco de dados inicializado com sucesso.")
 except Exception as e:
-    logger.error(f"Erro ao inicializar DB assíncrono: {str(e)}")
+    logger.error(f"Erro ao inicializar o banco de dados: {str(e)}")
     raise
 
-async def get_db():
-    """Dependência para FastAPI que fornece uma sessão assíncrona."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+def get_db():
+    """
+    Gerador de dependência para criar e fechar sessões do banco de dados por requisição.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

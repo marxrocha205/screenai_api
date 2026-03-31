@@ -100,7 +100,6 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
             "sub": user.email,
             "user_id": user.id,
             "plan_id": plan_id
-            
         }
     )
     

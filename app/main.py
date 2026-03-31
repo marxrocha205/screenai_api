@@ -3,10 +3,9 @@ Ponto de entrada principal da API ScreenAI.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
 from app.core.logger import setup_logger
-from app.core.database import AsyncSessionLocal, engine, Base
-from app.core.seed import create_default_admin, seed_plans
+from app.core.database import SessionLocal, engine, Base
+from app.core.seed import seed_plans
 
 
 from app.models.user_model import User
@@ -21,8 +20,8 @@ logger = setup_logger(__name__)
 
 app = FastAPI(
     title="API ScreenAI SaaS",
-    default_response_class=ORJSONResponse
-    
+    description="API de backend para orquestração multimodal (Texto, Áudio, Imagem) e gestão de assinaturas.",
+    version="1.0.0"
 )
 
 # Configuração de CORS para permitir que o frontend local acesse a API
@@ -53,19 +52,14 @@ app.include_router(admin_controller.router)
 @app.on_event("startup")
 async def startup_event():
     logger.info("Iniciando a API ScreenAI...")
-
-    # Criar tabelas (async correto)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    # Seed async
-    async with AsyncSessionLocal() as db:
-        await seed_plans(db)
-        await create_default_admin(db)
-        
-
-    logger.info("Verificação de dados iniciais (Seed) concluída.")
-
+    Base.metadata.create_all(bind=engine)
+    # Executa o Seed dos dados obrigatórios de planos financeiros
+    db = SessionLocal()
+    try:
+        seed_plans(db)
+        logger.info("Verificação de dados iniciais (Seed) concluída.")
+    finally:
+        db.close()
 
 @app.get("/health", tags=["Monitoramento"])
 def health_check():

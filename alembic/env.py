@@ -30,19 +30,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 def get_url():
-    url = os.getenv("DATABASE_URL")
-
-    if not url:
-        raise ValueError("DATABASE_URL não encontrada!")
-
-    # Railway antigo
+    """
+    Busca a URL do banco de dados das nossas configurações centrais (Pydantic).
+    Converte postgres:// para postgresql:// caso a Railway envie o formato antigo.
+    """
+    url = settings.database_url
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
-
-    # 🔥 ESSA LINHA RESOLVE SEU ERRO ATUAL
-    if "asyncpg" in url:
-        url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
-
     return url
 
 def run_migrations_offline() -> None:

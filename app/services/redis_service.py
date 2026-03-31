@@ -124,42 +124,6 @@ class RedisService:
         except Exception as e:
             logger.error(f"Erro ao verificar rate limit no Redis: {str(e)}")
             return True
-        # -------------------------------
-    # 🔴 CONTROLE DE CANCELAMENTO STREAM
-    # -------------------------------
 
-    def _get_cancel_key(self, session_id: str) -> str:
-        return f"stream_cancel:{session_id}"
-
-    async def cancel_stream(self, session_id: str):
-        """
-        Marca uma stream como cancelada.
-        TTL curto para evitar lixo no Redis.
-        """
-        try:
-            await self.redis.set(self._get_cancel_key(session_id), "1", ex=60)
-            logger.info(f"Stream cancelada: sessão {session_id}")
-        except Exception as e:
-            logger.error(f"Erro ao cancelar stream: {str(e)}")
-
-    async def is_stream_cancelled(self, session_id: str) -> bool:
-        """
-        Verifica se a stream foi cancelada.
-        """
-        try:
-            exists = await self.redis.exists(self._get_cancel_key(session_id))
-            return exists == 1
-        except Exception as e:
-            logger.error(f"Erro ao verificar cancelamento: {str(e)}")
-            return False
-
-    async def clear_stream_cancel(self, session_id: str):
-        """
-        Remove flag de cancelamento após uso.
-        """
-        try:
-            await self.redis.delete(self._get_cancel_key(session_id))
-        except Exception as e:
-            logger.error(f"Erro ao limpar cancelamento: {str(e)}")
 # Instância global Singleton
 redis_service = RedisService()
