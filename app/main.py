@@ -3,6 +3,7 @@ Ponto de entrada principal da API ScreenAI.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import settings
 from app.core.logger import setup_logger
 from app.core.database import SessionLocal, engine, Base
 from app.core.seed import seed_plans
@@ -18,17 +19,36 @@ from app.controllers import auth_controller, websocket_controller, chat_controll
 
 logger = setup_logger(__name__)
 
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import traceback
+
 app = FastAPI(
     title="API ScreenAI SaaS",
     description="API de backend para orquestração multimodal (Texto, Áudio, Imagem) e gestão de assinaturas.",
     version="1.0.0"
 )
 
-# Configuração de CORS para permitir que o frontend local acesse a API
+# Exception Handler Global para facilitar o Debug em produção
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"ERRO NÃO TRATADO: {str(exc)}")
+    logger.error(traceback.format_exc())
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Erro interno do servidor.", "error_type": type(exc).__name__}
+    )
+
+# Configuração de CORS para permitir que o frontend acesse a API
+# Se a lista for "*", permitimos tudo, mas sem credenciais (para evitar erro do browser)
+# Se houver domínios específicos, permitimos com credenciais.
+cors_origins = [o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()]
+allow_all = "*" in cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, substitua pelo domínio real do seu frontend (ex: "https://meuscreenai.com")
-    allow_credentials=True,
+    allow_origins=cors_origins if not allow_all else ["*"],
+    allow_credentials=not allow_all, # Wildcard "*" não permite credentials=True
     allow_methods=["*"],
     allow_headers=["*"],
 )
