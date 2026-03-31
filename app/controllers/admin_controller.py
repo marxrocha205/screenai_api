@@ -4,7 +4,8 @@ Restrito a utilizadores com a flag is_admin=True.
 Fornece métricas e agregações para o painel de controlo do frontend.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from sqlalchemy import func, cast, Date
 from pydantic import BaseModel
 from datetime import datetime, timedelta
@@ -30,7 +31,7 @@ router = APIRouter(
 )
 
 @router.get("/metrics")
-def get_dashboard_metrics(db: Session = Depends(get_db)):
+async def get_dashboard_metrics(db: AsyncSession = Depends(get_db)):
     """
     Retorna os KPIs (Key Performance Indicators) globais do sistema.
     Utiliza funções de agregação nativas do SQL para alta performance.
@@ -38,16 +39,20 @@ def get_dashboard_metrics(db: Session = Depends(get_db)):
     logger.info("A gerar métricas do painel de administração.")
     
     # 1. Total de utilizadores registados
-    total_users = db.query(func.count(User.id)).scalar() or 0
+    result_users = await db.execute(select(func.count(User.id)))
+    total_users = result_users.scalar() or 0
     
     # 2. Total de conversas (Sessões)
-    total_sessions = db.query(func.count(ChatSession.id)).scalar() or 0
+    result_sessions = await db.execute(select(func.count(ChatSession.id)))
+    total_sessions = result_sessions.scalar() or 0
     
     # 3. Total de mensagens transacionadas na plataforma
-    total_messages = db.query(func.count(ChatMessage.id)).scalar() or 0
+    result_messages = await db.execute(select(func.count(ChatMessage.id)))
+    total_messages = result_messages.scalar() or 0
     
     # 4. Total de créditos remanescentes (Passivo da plataforma)
-    total_credits_liability = db.query(func.sum(Subscription.remaining_credits)).scalar() or 0
+    result_credits = await db.execute(select(func.sum(Subscription.remaining_credits)))
+    total_credits_liability = result_credits.scalar() or 0
 
     return {
         "status": "success",
@@ -60,14 +65,14 @@ def get_dashboard_metrics(db: Session = Depends(get_db)):
     }
 
 @router.get("/chats/recent")
-def get_recent_system_activity(limit: int = 50, db: Session = Depends(get_db)):
+async def get_recent_system_activity(limit: int = 50, db: AsyncSession = Depends(get_db)):
     """
     Retorna os metadados das conversas mais recentes da plataforma.
     Por conformidade com privacidade, NÃO retorna o conteúdo das mensagens (ChatMessage.content),
     apenas os dados da sessão (títulos e datas).
     """
-    recent_sessions = (
-        db.query(
+    result = await db.execute(
+        select(
             ChatSession.id, 
             ChatSession.title, 
             ChatSession.created_at,
@@ -76,8 +81,8 @@ def get_recent_system_activity(limit: int = 50, db: Session = Depends(get_db)):
         .join(User, User.id == ChatSession.user_id)
         .order_by(ChatSession.created_at.desc())
         .limit(limit)
-        .all()
     )
+    recent_sessions = result.all()
 
     # Mapeamento do resultado SQLAlchemy para uma lista de dicionários
     results = [
@@ -93,18 +98,21 @@ def get_recent_system_activity(limit: int = 50, db: Session = Depends(get_db)):
     return {"status": "success", "data": results}
 
 @router.get("/users")
-def get_all_users(limit: int = 100, db: Session = Depends(get_db)):
+async def get_all_users(limit: int = 100, db: AsyncSession = Depends(get_db)):
     """
     Retorna a lista de utilizadores registados na plataforma.
     """
     logger.info("A listar utilizadores para o painel de admin.")
-    users = db.query(
-        User.id, 
-        User.email, 
-        User.is_active, 
-        User.is_admin, 
-        User.created_at
-    ).order_by(User.created_at.desc()).limit(limit).all()
+    result = await db.execute(
+        select(
+            User.id, 
+            User.email, 
+            User.is_active, 
+            User.is_admin, 
+            User.created_at
+        ).order_by(User.created_at.desc()).limit(limit)
+    )
+    users = result.all()
 
     results = [
         {
@@ -119,12 +127,12 @@ def get_all_users(limit: int = 100, db: Session = Depends(get_db)):
     return {"status": "success", "data": results}
 
 @router.get("/sessions")
-def get_all_sessions(limit: int = 100, db: Session = Depends(get_db)):
+async def get_all_sessions(limit: int = 100, db: AsyncSession = Depends(get_db)):
     """
     Retorna uma lista detalhada de sessões para a aba de gestão.
     """
-    sessions = (
-        db.query(
+    result = await db.execute(
+        select(
             ChatSession.id, 
             ChatSession.title, 
             ChatSession.created_at,
@@ -133,8 +141,8 @@ def get_all_sessions(limit: int = 100, db: Session = Depends(get_db)):
         .join(User, User.id == ChatSession.user_id)
         .order_by(ChatSession.created_at.desc())
         .limit(limit)
-        .all()
     )
+    sessions = result.all()
 
     results = [
         {
@@ -147,11 +155,11 @@ def get_all_sessions(limit: int = 100, db: Session = Depends(get_db)):
     ]
     return {"status": "success", "data": results}
 
-router.patch("/users/{user_id}/status")
-def update_user_status(
+@router.patch("/users/{user_id}/status")
+async def update_user_status(
     user_id: int, 
     payload: UserStatusUpdate, 
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Atualiza o estado (ativo/inativo) de um utilizador específico.
@@ -160,7 +168,8 @@ def update_user_status(
     logger.info(f"Admin a solicitar alteração de estado para o utilizador ID: {user_id}. Novo estado: {payload.is_active}")
     
     # 1. Procurar o utilizador na base de dados
-    user = db.query(User).filter(User.id == user_id).first()
+    result = await db.execute(select(User).filter(User.id == user_id))
+    user = result.scalars().first()
     
     if not user:
         logger.warning(f"Falha na alteração: Utilizador ID {user_id} não encontrado.")
@@ -177,11 +186,11 @@ def update_user_status(
     user.is_active = payload.is_active
     
     try:
-        db.commit()
-        db.refresh(user)
+        await db.commit()
+        await db.refresh(user)
         logger.info(f"Estado do utilizador ID {user_id} atualizado com sucesso para {user.is_active}.")
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Erro na base de dados ao atualizar o utilizador ID {user_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
@@ -198,7 +207,7 @@ def update_user_status(
     }
     
 @router.get("/metrics/trends")
-def get_dashboard_trends(days: int = 7, db: Session = Depends(get_db)):
+async def get_dashboard_trends(days: int = 7, db: AsyncSession = Depends(get_db)):
     """
     Retorna dados agregados por data para a construção de gráficos de tendências.
     Por defeito, analisa os últimos 7 dias.
@@ -210,21 +219,21 @@ def get_dashboard_trends(days: int = 7, db: Session = Depends(get_db)):
 
     # Função Sênior (Closure): Evita repetição de código (DRY - Don't Repeat Yourself)
     # Executa a agregação diretamente no motor da Base de Dados (muito mais rápido que fazer loops em Python)
-    def get_daily_counts(model):
-        return (
-            db.query(
+    async def get_daily_counts(model):
+        result = await db.execute(
+            select(
                 cast(model.created_at, Date).label("date"),
                 func.count(model.id).label("count")
             )
             .filter(model.created_at >= cutoff_date)
             .group_by(cast(model.created_at, Date))
-            .all()
         )
+        return result.all()
 
     # Executar as agregações para as 3 métricas principais
-    users_trend = get_daily_counts(User)
-    sessions_trend = get_daily_counts(ChatSession)
-    messages_trend = get_daily_counts(ChatMessage)
+    users_trend = await get_daily_counts(User)
+    sessions_trend = await get_daily_counts(ChatSession)
+    messages_trend = await get_daily_counts(ChatMessage)
 
     # Estruturar os dados para a biblioteca gráfica do Frontend (Recharts)
     # O Recharts espera um array de objetos: [{ date: "2023-10-01", users: 2, sessions: 5 }, ...]
@@ -268,10 +277,10 @@ def get_dashboard_trends(days: int = 7, db: Session = Depends(get_db)):
 # from app.schemas.user_schemas import UserStatusUpdate, AdminCreditUpdate
 
 @router.post("/users/{user_id}/credits")
-def adjust_user_credits(
+async def adjust_user_credits(
     user_id: int, 
     payload: AdminCreditUpdate, 
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Ajusta manualmente o saldo de créditos de um utilizador.
@@ -280,7 +289,8 @@ def adjust_user_credits(
     logger.info(f"Admin a solicitar ajuste financeiro. Utilizador ID: {user_id} | Montante: {payload.amount} | Motivo: {payload.reason}")
     
     # 1. Obter a subscrição/conta do utilizador
-    subscription = db.query(Subscription).filter(Subscription.user_id == user_id).first()
+    result = await db.execute(select(Subscription).filter(Subscription.user_id == user_id))
+    subscription = result.scalars().first()
     
     if not subscription:
         logger.warning(f"Falha ao ajustar créditos: Subscrição não encontrada para o utilizador ID {user_id}.")
@@ -301,14 +311,14 @@ def adjust_user_credits(
     subscription.remaining_credits = novo_saldo
     
     try:
-        db.commit()
-        db.refresh(subscription)
+        await db.commit()
+        await db.refresh(subscription)
         
         # Num sistema real, aqui chamaríamos um serviço de Auditoria para guardar o 'payload.reason'
         logger.info(f"Sucesso. Novo saldo do utilizador ID {user_id}: {subscription.remaining_credits}. Motivo registado: {payload.reason}")
         
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Erro crítico na base de dados ao ajustar créditos do ID {user_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
@@ -326,7 +336,7 @@ def adjust_user_credits(
     }
     
 @router.get("/billing")
-def get_billing_data(limit: int = 100, db: Session = Depends(get_db)):
+async def get_billing_data(limit: int = 100, db: AsyncSession = Depends(get_db)):
         """
         Retorna a lista completa de utilizadores com os seus dados financeiros cruzados.
         Substitui a simulação do frontend por dados reais e auditáveis.
@@ -335,8 +345,8 @@ def get_billing_data(limit: int = 100, db: Session = Depends(get_db)):
         
         # Realizamos um LEFT JOIN para garantir que utilizadores sem assinatura
         # também aparecem no painel (para podermos injetar créditos neles se necessário)
-        results = (
-            db.query(
+        result = await db.execute(
+            select(
                 User.id,
                 User.email,
                 User.is_active,
@@ -349,8 +359,8 @@ def get_billing_data(limit: int = 100, db: Session = Depends(get_db)):
             .outerjoin(Plan, Plan.id == Subscription.plan_id)
             .order_by(User.created_at.desc())
             .limit(limit)
-            .all()
         )
+        results = result.all()
 
         data = []
         for row in results:
@@ -386,15 +396,15 @@ class SettingUpdate(BaseModel):
     value: str
 
 @router.get("/audit")
-def get_audit_logs(limit: int = 100, db: Session = Depends(get_db)):
+async def get_audit_logs(limit: int = 100, db: AsyncSession = Depends(get_db)):
     """Retorna os registos de auditoria mais recentes."""
-    logs = (
-        db.query(AdminAuditLog, User.email.label("admin_email"))
+    result = await db.execute(
+        select(AdminAuditLog, User.email.label("admin_email"))
         .join(User, User.id == AdminAuditLog.admin_id)
         .order_by(AdminAuditLog.created_at.desc())
         .limit(limit)
-        .all()
     )
+    logs = result.all()
     
     results = []
     for log, email in logs:
@@ -410,18 +420,20 @@ def get_audit_logs(limit: int = 100, db: Session = Depends(get_db)):
     return {"status": "success", "data": results}
 
 @router.get("/settings")
-def get_system_settings(db: Session = Depends(get_db)):
+async def get_system_settings(db: AsyncSession = Depends(get_db)):
     """Lista as configurações dinâmicas globais."""
-    settings = db.query(SystemSetting).all()
+    result = await db.execute(select(SystemSetting))
+    settings = result.scalars().all()
     return {
         "status": "success", 
         "data": [{"key": s.key, "value": s.value, "description": s.description, "updated_at": s.updated_at} for s in settings]
     }
 
 @router.patch("/settings/{key}")
-def update_system_setting(key: str, payload: SettingUpdate, db: Session = Depends(get_db)):
+async def update_system_setting(key: str, payload: SettingUpdate, db: AsyncSession = Depends(get_db)):
     """Atualiza o valor de uma configuração em tempo real."""
-    setting = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    result = await db.execute(select(SystemSetting).filter(SystemSetting.key == key))
+    setting = result.scalars().first()
     if not setting:
         raise HTTPException(status_code=404, detail="Configuração não encontrada.")
     
@@ -432,5 +444,5 @@ def update_system_setting(key: str, payload: SettingUpdate, db: Session = Depend
     # se não, use um ID genérico para já ou ajuste para injetar o `current_user`.
     # audit_log = AdminAuditLog(admin_id=current_user.id, action="UPDATE_SETTING", ...)
     
-    db.commit()
+    await db.commit()
     return {"status": "success", "message": "Configuração atualizada."}

@@ -2,9 +2,8 @@
 Controlador de rotas REST para gestão de Perfil de Usuário.
 Fornece os dados financeiros e de plano para o frontend.
 """
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 import jwt
 
 from app.core.database import get_db
@@ -39,21 +38,26 @@ def get_current_user_id(token: str = Depends(oauth2_scheme)) -> int:
 
 
 @router.get("/me", response_model=UserProfileResponse)
-def get_user_profile(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+async def get_user_profile(user_id: int = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     """
     Retorna o perfil completo do usuário autenticado, incluindo os dados
     da assinatura e saldo de créditos atual.
     """
     # 1. Busca o usuário
-    user = db.query(User).filter(User.id == user_id).first()
+    result_user = await db.execute(select(User).filter(User.id == user_id))
+    user = result_user.scalars().first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
         
     # 2. Busca a assinatura vinculada
-    subscription = db.query(Subscription).filter(Subscription.user_id == user_id).first()
+    result_sub = await db.execute(select(Subscription).filter(Subscription.user_id == user_id))
+    subscription = result_sub.scalars().first()
     
     # 3. Busca o plano para saber o nome e o limite total
-    plan = db.query(Plan).filter(Plan.id == subscription.plan_id).first() if subscription else None
+    plan = None
+    if subscription:
+        result_plan = await db.execute(select(Plan).filter(Plan.id == subscription.plan_id))
+        plan = result_plan.scalars().first()
     
     # 4. Monta o objeto de resposta mapeando com o Pydantic
     return {

@@ -2,8 +2,8 @@
 Controlador de Autenticação.
 Gerencia as rotas de registro de usuários e login (geração de token).
 """
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.core.database import get_db
@@ -18,14 +18,15 @@ logger = setup_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Autenticação"])
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register_user(user: UserCreate, db: Session = Depends(get_db)):
+async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     """
     Registra um novo usuário no sistema.
     """
     logger.info(f"Tentativa de registro para o email: {user.email}")
     
     # Verifica se o email já existe
-    db_user = db.query(User).filter(User.email == user.email).first()
+    result = await db.execute(select(User).filter(User.email == user.email))
+    db_user = result.scalars().first()
     if db_user:
         logger.warning(f"Falha de registro: Email {user.email} já cadastrado.")
         raise HTTPException(
@@ -35,7 +36,8 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     
     try:
         # 1. Busca o plano Free no catálogo
-        free_plan = db.query(Plan).filter(Plan.name == "Free").first()
+        result_plan = await db.execute(select(Plan).filter(Plan.name == "Free"))
+        free_plan = result_plan.scalars().first()
         if not free_plan:
             logger.error("Plano 'Free' não encontrado na base de dados. Falha crítica.")
             raise HTTPException(status_code=500, detail="Erro de configuração do sistema.")
@@ -48,7 +50,7 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         # Dica de Engenharia (flush): 
         # Envia o utilizador para a base de dados para gerar o ID, mas não consolida (commit) ainda.
         # Se a criação da assinatura falhar, o utilizador não será guardado (Transação atómica).
-        db.flush() 
+        await db.flush() 
         
         # 3. Cria a Assinatura vinculando o ID do Utilizador ao ID do Plano
         new_subscription = Subscription(
@@ -60,8 +62,8 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         db.add(new_subscription)
         
         # 4. Consolida tudo (Utilizador + Assinatura) em segurança
-        db.commit()
-        db.refresh(new_user)
+        await db.commit()
+        await db.refresh(new_user)
         
         logger.info(f"Utilizador {user.email} registado com plano Free (ID: {new_user.id})")
         return new_user
@@ -69,18 +71,19 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Erro na base de dados ao registar utilizador: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro interno ao registar utilizador.")
 
 @router.post("/login", response_model=Token)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
     """
     Autentica o utilizador e gera o token JWT enriquecido com dados de negócio (user_id, plan_id).
     """
     logger.info(f"Tentativa de login para o utilizador: {form_data.username}")
     
-    user = db.query(User).filter(User.email == form_data.username).first()
+    result = await db.execute(select(User).filter(User.email == form_data.username))
+    user = result.scalars().first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         logger.warning(f"Falha de login: Credenciais inválidas para {form_data.username}")
         raise HTTPException(
@@ -90,7 +93,8 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
         )
 
     # Vai buscar os dados da assinatura do utilizador
-    subscription = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+    result_sub = await db.execute(select(Subscription).filter(Subscription.user_id == user.id))
+    subscription = result_sub.scalars().first()
     plan_id = subscription.plan_id if subscription else None
     
     # ENRIQUECIMENTO DO PAYLOAD
