@@ -20,6 +20,10 @@ if not db_url:
 if db_url.startswith('postgres://'):
     db_url = db_url.replace('postgres://', 'postgresql://', 1)
 
+# 🔥 Adicionado para suportar URLs com +asyncpg (que o psycopg2 não entende)
+if 'asyncpg' in db_url:
+    db_url = db_url.replace('postgresql+asyncpg://', 'postgresql://', 1)
+
 while True:
     try:
         conn = psycopg2.connect(db_url)
