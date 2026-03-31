@@ -28,7 +28,7 @@ app = FastAPI(
 origins = [
     "http://localhost:3000",
     "http://localhost:5173",
-    # Adicione abaixo o domínio do seu frontend quando fizer o deploy
+    "https://frontscreenai-production.up.railway.app",
 ]
 
 app.add_middleware(
