@@ -66,3 +66,7 @@ class AdminCreditUpdate(BaseModel):
         min_length=5,
         description="Justificação obrigatória para a auditoria (ex: 'Reembolso por falha na API')."
     )
+
+class GoogleAuthRequest(BaseModel):
+    """Schema para validação do token do Google recebido do frontend."""
+    token: str = Field(..., description="O JWT token retornado pelo Google Identity Services.")

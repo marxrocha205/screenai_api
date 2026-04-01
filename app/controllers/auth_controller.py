@@ -7,6 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+import os
+import secrets
+import string
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 from app.core.database import get_db
 from app.core.logger import setup_logger
@@ -14,7 +19,7 @@ from app.core.security import get_password_hash, verify_password, create_access_
 from app.models.user_model import User
 from app.models.plan_model import Plan
 from app.models.subscription_model import Subscription
-from app.schemas.user_schemas import UserCreate, UserResponse, Token
+from app.schemas.user_schemas import UserCreate, UserResponse, Token, GoogleAuthRequest
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Autenticação"])
@@ -117,4 +122,89 @@ async def login_for_access_token(
     )
     
     logger.info(f"Login bem-sucedido para {user.email}. Token gerado.")
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@router.post("/google", response_model=Token)
+async def google_auth(request: GoogleAuthRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Recebe o ID Token do Google gerado pelo frontend.
+    Verifica a autenticidade e realiza login ou registro (Criação de conta Free automática).
+    """
+    token = request.token
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    
+    if not google_client_id:
+        logger.error("GOOGLE_CLIENT_ID não configurado no .env.")
+        raise HTTPException(status_code=500, detail="Configuração de servidor incompleta para OAuth do Google.")
+
+    try:
+        # 1. Autenticar o token recebido no Google
+        id_info = id_token.verify_oauth2_token(
+            token, google_requests.Request(), google_client_id
+        )
+        
+        # 2. Extrair informações do payload do Google
+        email = id_info.get("email")
+        name = id_info.get("name")
+        
+        if not email:
+            raise ValueError("O token do Google fornecido não possui o escopo de e-mail.")
+            
+    except ValueError as e:
+        logger.warning(f"Tentativa de login rejeitada pelo Google Auth: {str(e)}")
+        raise HTTPException(status_code=400, detail="Verificação do Google falhou: token inválido ou expirado.")
+
+    # 3. Com o Email verificado e garantido pelo Google, validamos a existência local
+    result_user = await db.execute(select(User).where(User.email == email))
+    user = result_user.scalars().first()
+    
+    # 4. Se não existe na nossa BD, registramos como um novo User com Plano Free
+    if not user:
+        logger.info(f"O email Google {email} é novo. Realizando registro automático.")
+        try:
+            result_plan = await db.execute(select(Plan).where(Plan.name == "Free"))
+            free_plan = result_plan.scalars().first()
+            
+            if not free_plan:
+                logger.error("Plano 'Free' em falta durante auto-registro do Google.")
+                raise HTTPException(status_code=500, detail="Falha crítica: plano Free ausente.")
+
+            # Para um Login OAuth, a senha perde a utilidade, então geramos uma indecifrável
+            alphabet = string.ascii_letters + string.digits + string.punctuation
+            rand_pwd = ''.join(secrets.choice(alphabet) for i in range(32))
+            
+            user = User(email=email, full_name=name, hashed_password=get_password_hash(rand_pwd))
+            db.add(user)
+            await db.flush()
+            
+            new_sub = Subscription(
+                user_id=user.id,
+                plan_id=free_plan.id,
+                status="active",
+                remaining_credits=free_plan.monthly_credits
+            )
+            db.add(new_sub)
+            await db.commit()
+            await db.refresh(user)
+            logger.info(f"Novo usuário {email} criado via Google Auth com sucesso.")
+            
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Erro BD no registro via Google: {str(e)}")
+            raise HTTPException(status_code=500, detail="Erro interno no registro.")
+            
+    # 5. GERAR O NOSSO TOKEN (Seja recém-registrado ou login)
+    result_sub = await db.execute(select(Subscription).where(Subscription.user_id == user.id))
+    subscription = result_sub.scalars().first()
+    plan_id = subscription.plan_id if subscription else None
+    
+    access_token = create_access_token(
+        data={
+            "sub": user.email,
+            "user_id": user.id,
+            "plan_id": plan_id
+        }
+    )
+    
+    logger.info(f"Autenticação via Google completa para {email}.")
     return {"access_token": access_token, "token_type": "bearer"}

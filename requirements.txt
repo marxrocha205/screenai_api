@@ -17,3 +17,6 @@ redis==5.0.1
 openai
 asyncpg
 greenlet
+google-auth==2.30.0
+google-auth-httplib2==0.2.0
+requests==2.32.3
