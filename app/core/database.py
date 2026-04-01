@@ -1,40 +1,58 @@
 """
 Módulo de conexão com o banco de dados.
-Configura o motor do SQLAlchemy utilizando a URL fornecida pelas variáveis de ambiente.
+Configura o motor ASSÍNCRONO do SQLAlchemy utilizando a URL fornecida.
 """
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 from app.core.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# O SQLAlchemy exige que URLs do Postgres comecem com 'postgresql://'
-# A Railway às vezes fornece 'postgres://', então fazemos a conversão de segurança.
 SQLALCHEMY_DATABASE_URL = settings.database_url
-# Normalização para garantir protocolo síncrono (psycopg2)
+
+# Normalização da URL para o driver assíncrono
 if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
-# Se por acaso vier com o driver assíncrono, removemos para o SQLAlchemy síncrono funcionar
-elif "+asyncpg" in SQLALCHEMY_DATABASE_URL:
-    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("+asyncpg", "")
+
+# Garante que a URL usa o driver asyncpg
+if SQLALCHEMY_DATABASE_URL.startswith("postgresql://"):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 try:
-    # Cria o motor de conexão. Pool pre_ping verifica se a conexão está ativa antes de usá-la.
-    engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    # Cria o motor de conexão assíncrono.
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True)
+    
+    # SessionLocal agora gera AsyncSession
+    AsyncSessionLocal = sessionmaker(
+        autocommit=False, 
+        autoflush=False, 
+        bind=engine, 
+        class_=AsyncSession
+    )
     Base = declarative_base()
-    logger.info("Motor de banco de dados inicializado com sucesso.")
+    logger.info("Motor de banco de dados ASSÍNCRONO inicializado com sucesso.")
 except Exception as e:
     logger.error(f"Erro ao inicializar o banco de dados: {str(e)}")
     raise
 
-def get_db():
+async def get_db():
     """
-    Gerador de dependência para criar e fechar sessões do banco de dados por requisição.
+    Gerador de dependência assíncrono para injetar o DB nas rotas.
     """
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    async with AsyncSessionLocal() as db:
+        try:
+            yield db
+        finally:
+            await db.close()
+
+# Mantido por retrocompatibilidade temporária com scripts síncronos (ex: seed.py)
+# Recomendado não usar nas rotas FastAPI
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+try:
+    SYNC_URL = SQLALCHEMY_DATABASE_URL.replace("+asyncpg", "")
+    sync_engine = create_engine(SYNC_URL, pool_pre_ping=True)
+    SessionLocalSync = sessionmaker(autocommit=False, autoflush=False, bind=sync_engine)
+except Exception:
+    pass
