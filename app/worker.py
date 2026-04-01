@@ -1,38 +1,43 @@
+"""
+Trabalhador em Background (Worker).
+Consome as filas do Redis e processa as chamadas pesadas da IA de forma assíncrona.
+"""
 import asyncio
 import json
 import traceback
+
+from sqlalchemy import select
+from app.core.database import AsyncSessionLocal
+from app.core.logger import setup_logger
 
 from app.services.redis_service import redis_service
 from app.services.gemini_service import gemini_service
 from app.services.tts_service import tts_service
 from app.services.websocket_manager import manager
 from app.services.billing_service import billing_service
-from app.core.database import AsyncSessionLocal
-from sqlalchemy import select
+
 from app.models.subscription_model import Subscription
 from app.models.chat_model import ChatSession, ChatMessage
 from app.models.usage_model import UsageLog
-from app.core.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 QUEUES = ["queue_plus", "queue_pro", "queue_free"]
 MAX_RETRIES = 3
 
+# Limita o número de processamentos simultâneos para não derrubar o servidor
 SEMAPHORE = asyncio.Semaphore(10)
 
-
 async def get_next_job():
+    """Busca o próximo trabalho respeitando a prioridade (Plus > Pro > Free)."""
     for queue in QUEUES:
         job = await redis_service.redis.rpop(queue)
         if job:
             return queue, job
     return None, None
 
-
 async def process_job(payload: dict):
     async with SEMAPHORE:
-
         user_id = payload["user_id"]
         plan_id = payload["plan_id"]
         user_text = payload.get("text", "")
@@ -41,13 +46,14 @@ async def process_job(payload: dict):
         retries = payload.get("retries", 0)
 
         async with AsyncSessionLocal() as db:
-
+            # 1. Calcula Custo
             custo = billing_service.calculate_interaction_cost(
                 has_image=bool(image_bytes),
                 use_premium_voice=True
             )
 
-            success = await billing_service.charge_credits(db, user_id, custo)
+            # 2. Cobra os créditos
+            success = await billing_service.deduct_credits(db, user_id, custo)
 
             if not success:
                 await manager.send_personal_message({
@@ -57,85 +63,41 @@ async def process_job(payload: dict):
                 return
 
             try:
-                texto = ""
-                session_id_final = session_id
-
-                # 🔥 STREAM REAL
-                async for chunk in gemini_service.generate_response_stream(
+                # 3. Chama a IA (Substituído temporariamente por generate_response normal)
+                # Implementaremos o stream real no futuro ao trocar para o pacote google-genai
+                resposta_ia = await gemini_service.generate_response(
                     user_id=user_id,
                     plan_id=plan_id,
                     session_id=session_id,
                     user_message=user_text,
                     image_bytes=image_bytes
-                ):
-                    if session_id and await redis_service.is_stream_cancelled(session_id):
-                        logger.info(f"[STOP] usuário {user_id} cancelou stream")
+                )
+                
+                texto = resposta_ia.get("text", "Erro ao gerar resposta.")
+                session_id_final = resposta_ia.get("session_id") or session_id
 
-                        await manager.send_personal_message({
-                            "type": "stopped",
-                            "session_id": session_id
-                        }, user_id)
-
-                        await redis_service.clear_stream_cancel(session_id)
-
-                        return
-
-                    if chunk["type"] == "chunk":
-                        texto = chunk["full"]
-
-                        await manager.send_personal_message({
-                            "type": "stream",
-                            "delta": chunk["text"],
-                            "full": texto,
-                            "session_id": chunk["session_id"]
-                        }, user_id)
-
-                    elif chunk["type"] == "end":
-                        texto = chunk["text"]
-                        session_id_final = chunk["session_id"]
-
-                        await manager.send_personal_message({
-                            "type": "stream_end",
-                            "message": texto,
-                            "session_id": session_id_final
-                        }, user_id)
-
-                    elif chunk["type"] == "error":
-                        raise Exception(chunk["message"])
-
-                # 💾 histórico
+                # 4. Salva o Histórico de Chat
                 if not session_id:
-                    db.add(ChatSession(
+                    nova_sessao = ChatSession(
                         id=session_id_final,
                         user_id=user_id,
-                        title=user_text[:30] if user_text else "Nova conversa"
-                    ))
+                        title=user_text[:30] + "..." if user_text else "Nova conversa"
+                    )
+                    db.add(nova_sessao)
                     await db.commit()
 
-                db.add(ChatMessage(
-                    session_id=session_id_final,
-                    role="user",
-                    content=user_text
-                ))
-
-                db.add(ChatMessage(
-                    session_id=session_id_final,
-                    role="assistant",
-                    content=texto
-                ))
-
+                db.add(ChatMessage(session_id=session_id_final, role="user", content=user_text))
+                db.add(ChatMessage(session_id=session_id_final, role="assistant", content=texto))
                 await db.commit()
 
-                # 🔊 TTS
+                # 5. Gera o Áudio TTS
                 audio = await tts_service.generate_audio_base64(texto, plan_id)
 
-                # 📊 saldo
-                result = await db.execute(
-                    select(Subscription).where(Subscription.user_id == user_id)
-                )
+                # 6. Busca o Saldo Atualizado
+                result = await db.execute(select(Subscription).where(Subscription.user_id == user_id))
                 sub = result.scalars().first()
 
-                # 📤 resposta final
+                # 7. Envia a Resposta Final via WebSocket
                 await manager.send_personal_message({
                     "type": "ai_response",
                     "message": texto,
@@ -144,35 +106,29 @@ async def process_job(payload: dict):
                     "session_id": session_id_final
                 }, user_id)
 
-                # 📊 analytics
-                db.add(UsageLog(
-                    user_id=user_id,
-                    action="ai_request",
-                    cost=custo
-                ))
+                # 8. Regista o Analytics
+                db.add(UsageLog(user_id=user_id, action="ai_request", cost=custo))
                 await db.commit()
 
-            except Exception:
-                logger.error(traceback.format_exc())
-
+            except Exception as e:
+                # Ocorreu um erro técnico! Faz rollback, devolve o dinheiro e tenta novamente.
+                logger.error(f"[WORKER ERROR] Erro ao processar job: {traceback.format_exc()}")
+                
                 await billing_service.refund_credits(db, user_id, custo)
 
                 if retries < MAX_RETRIES:
                     payload["retries"] = retries + 1
-                    queue = QUEUES[min(plan_id - 1, 2)]
-                    await redis_service.redis.lpush(queue, json.dumps(payload))
-
-                    logger.warning(f"[RETRY] {retries+1} usuário {user_id}")
+                    queue_name = QUEUES[min(plan_id - 1, 2)]
+                    await redis_service.redis.lpush(queue_name, json.dumps(payload))
+                    logger.warning(f"[RETRY] Tentativa {retries+1} para o usuário {user_id}")
                 else:
                     await manager.send_personal_message({
                         "type": "error",
-                        "message": "Erro ao processar sua solicitação."
+                        "message": "Erro ao processar sua solicitação após várias tentativas. Seus créditos foram devolvidos."
                     }, user_id)
-
 
 async def worker():
     logger.info("🔥 Worker Enterprise iniciado")
-
     while True:
         try:
             queue, job = await get_next_job()
@@ -182,13 +138,11 @@ async def worker():
                 continue
 
             payload = json.loads(job)
-
             asyncio.create_task(process_job(payload))
 
         except Exception as e:
-            logger.error(f"[WORKER ERROR] {str(e)}")
+            logger.error(f"[WORKER LOOP ERROR] {str(e)}")
             await asyncio.sleep(1)
-
 
 if __name__ == "__main__":
     asyncio.run(worker())

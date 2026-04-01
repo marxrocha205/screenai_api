@@ -1,7 +1,13 @@
+"""
+Serviço de Filas (Filas de Prioridade Baseadas no Plano).
+"""
 import json
 import uuid
 from app.services.redis_service import redis_service
 
+# ---------------------------------------------------------
+# REGRAS DE NEGÓCIO: ROTEAMENTO DE FILAS
+# ---------------------------------------------------------
 QUEUE_MAP = {
     1: "queue_free",
     2: "queue_pro",
@@ -10,7 +16,8 @@ QUEUE_MAP = {
 
 class QueueService:
 
-    async def enqueue(self, payload: dict):
+    async def enqueue(self, payload: dict) -> str:
+        """Adiciona um trabalho à fila do Redis baseada no plano do utilizador."""
         job_id = str(uuid.uuid4())
         payload["job_id"] = job_id
 
@@ -24,4 +31,5 @@ class QueueService:
 
         return job_id
 
+# Instância Singleton
 queue_service = QueueService()
