@@ -38,6 +38,25 @@ def get_current_user_id(token: str = Depends(oauth2_scheme)) -> int:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido")
 
 
+@router.get("/me/credits")
+def get_user_credits(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    """
+    Retorna apenas o saldo de créditos do usuário autenticado.
+    Use esta rota para verificar rapidamente se o usuário pode continuar usando o serviço.
+    """
+    subscription = db.query(Subscription).filter(Subscription.user_id == user_id).first()
+
+    remaining = subscription.remaining_credits if subscription else 0
+    is_active = subscription.status == "active" if subscription else False
+    is_blocked = remaining <= 0 or not is_active
+
+    return {
+        "remaining_credits": remaining,
+        "subscription_status": subscription.status if subscription else "inactive",
+        "is_blocked": is_blocked
+    }
+
+
 @router.get("/me", response_model=UserProfileResponse)
 def get_user_profile(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
     """
