@@ -1,6 +1,7 @@
 """
 Módulo responsável pela segurança, criptografia de senhas e geração de tokens JWT.
 Utilizando bcrypt de forma nativa e segura, sem dependências obsoletas.
+Refatorado para operações assíncronas no banco de dados.
 """
 from datetime import datetime, timedelta
 import bcrypt
@@ -11,9 +12,12 @@ from app.core.logger import setup_logger
 from fastapi import WebSocketException, status, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 
-from sqlalchemy.orm import Session
+# Importações atualizadas para SQLAlchemy 2.0 (Async)
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.user_model import User
-from app.core.database import SessionLocal, get_db
+from app.core.database import get_db
 
 logger = setup_logger(__name__)
 
@@ -47,7 +51,7 @@ def create_access_token(data: dict) -> str:
         logger.error(f"Erro ao gerar token JWT: {str(e)}")
         raise
 
-def verify_ws_token(token: str) -> User:
+def verify_ws_token(token: str) -> dict:
     """
     Verifica o token JWT passado via WebSocket (Query Params).
     Retorna um dicionário com os dados extraídos do token de forma ultrarrápida,
@@ -64,8 +68,6 @@ def verify_ws_token(token: str) -> User:
             logger.warning("Token de WebSocket com payload incompleto.")
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
             
-        # Retorna um objeto simples (dict) em vez de instanciar um modelo do SQLAlchemy.
-        # Isto deixa o WebSocket absurdamente mais rápido e leve.
         return {
             "id": user_id,
             "email": email,
@@ -80,9 +82,9 @@ def verify_ws_token(token: str) -> User:
         raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
     
     
-def verify_admin_token(
+async def verify_admin_token(
     token: str = Depends(oauth2_scheme), 
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ) -> User:
     """
     Dependência HTTP para proteger rotas de administração.
@@ -106,8 +108,9 @@ def verify_admin_token(
         logger.error(f"Erro de validação JWT no Admin: {str(e)}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido.")
 
-    # Verificação rígida no banco de dados para privilégios de administrador
-    user = db.query(User).filter(User.id == user_id).first()
+    # Verificação rígida assíncrona no banco de dados para privilégios de administrador
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalars().first()
     
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilizador não encontrado.")
