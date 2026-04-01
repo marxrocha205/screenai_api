@@ -32,6 +32,8 @@ origins = [
     "https://frontscreenai-production.up.railway.app",
     "https://appscreenai.com",
     "https://www.appscreenai.com",
+    "https://frontscreenai-copy-production.up.railway.app",
+    "https://www.frontscreenai-copy-production.up.railway.app"
 ]
 
 app.add_middleware(
