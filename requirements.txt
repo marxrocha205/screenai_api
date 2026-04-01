@@ -16,3 +16,4 @@ pillow
 redis==5.0.1
 openai
 asyncpg
+greenlet
