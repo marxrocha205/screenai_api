@@ -29,6 +29,8 @@ origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://frontscreenai-production.up.railway.app",
+    "https://appscreenai.com",
+    "https://www.appscreenai.com",
 ]
 
 app.add_middleware(
