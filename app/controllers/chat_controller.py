@@ -2,10 +2,15 @@
 Controlador de rotas REST para Chat e Uploads Multimodais.
 Permite o envio de texto, áudio, imagens pesadas e documentos PDF via HTTP POST,
 integrando-se ao mesmo histórico de conversa (Redis) utilizado pelo WebSocket.
+Refatorado para operações assíncronas no banco de dados (SQLAlchemy 2.0).
 """
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Request
 from typing import Optional
-from sqlalchemy.orm import Session
+
+# Importações atualizadas para Async
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import get_db
 from app.core.logger import setup_logger
 from app.core.security import verify_ws_token # Reutilizamos a validação do token JWT
@@ -24,21 +29,20 @@ async def send_multimodal_message(
     session_id: Optional[str] = Form(None),
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db) # INJETAMOS A SESSÃO DO BANCO DE DADOS
+    db: AsyncSession = Depends(get_db) # INJEÇÃO DA SESSÃO ASSÍNCRONA
 ):
     """
     Recebe uma mensagem de texto e/ou um arquivo (Áudio, PDF, Imagem).
     Processa, retorna a resposta da IA e SALVA no banco de dados.
     """
-    # 1. Valida o usuário e extrai as credenciais
+    # 1. Valida o utilizador e extrai as credenciais
     user = verify_ws_token(token)
     user_id = user["id"] if isinstance(user, dict) else user.id
     
-    # Busca o plan_id (necessário para o gemini_service que você me enviou)
-    # Se o seu verify_ws_token não retornar o plan_id, coloque um padrão como 1 (Plano Free)
+    # Busca o plan_id (necessário para o gemini_service)
     plan_id = user.get("plan_id", 1) if isinstance(user, dict) else getattr(user, "plan_id", 1)
     
-    logger.info(f"Requisição HTTP Multimodal recebida do usuário {user_id}")
+    logger.info(f"Requisição HTTP Multimodal recebida do utilizador {user_id}")
     
     # 2. Rate Limit
     is_allowed = await redis_service.check_rate_limit(user_id, max_requests=10, window_seconds=60)
@@ -116,7 +120,7 @@ async def send_multimodal_message(
     texto_resposta = resposta_ia.get("text", "Erro ao gerar resposta.")
 
     # ---------------------------------------------------------
-    # 5. PERSISTÊNCIA NO POSTGRESQL (A MÁGICA DA BARRA LATERAL)
+    # 5. PERSISTÊNCIA NO POSTGRESQL (ASSÍNCRONA)
     # ---------------------------------------------------------
     try:
         # Se não tínhamos um ID antes, é uma conversa nova. Precisamos criar a ChatSession.
@@ -128,10 +132,10 @@ async def send_multimodal_message(
                 title=titulo
             )
             db.add(nova_sessao)
-            db.commit() # Comita para a sessão existir antes de inserir as mensagens
+            await db.commit() # AWAIT adicionado
             logger.info(f"Sessão {id_da_conversa} salva no DB.")
 
-        # Salva a mensagem do usuário (texto ou sinalização de arquivo)
+        # Salva a mensagem do utilizador (texto ou sinalização de arquivo)
         conteudo_user = text or f"[Arquivo enviado: {file.filename}]"
         msg_user = ChatMessage(
             session_id=id_da_conversa,
@@ -148,11 +152,11 @@ async def send_multimodal_message(
         )
         db.add(msg_ai)
         
-        # Comita as mensagens no banco de dados
-        db.commit()
+        # Comita as mensagens no banco de dados de forma assíncrona
+        await db.commit()
     except Exception as db_err:
         logger.error(f"Erro ao salvar histórico no banco: {str(db_err)}")
-        db.rollback() # Previne travamentos no banco caso algo dê errado
+        await db.rollback() # AWAIT adicionado para prevenir travamentos
 
     # 6. Retorna o resultado para o frontend
     return {
@@ -161,6 +165,7 @@ async def send_multimodal_message(
         "session_id": id_da_conversa,
         "response": texto_resposta
     }
+
 
 @router.post("/transcribe")
 async def transcribe_voice(
@@ -172,13 +177,17 @@ async def transcribe_voice(
     Recebe um arquivo de voz e devolve o texto, sem chamar o Gemini.
     """
     user = verify_ws_token(token)
-    logger.info(f"Requisição de transcrição REST recebida do usuário {user.id}")
-    is_allowed = await redis_service.check_rate_limit(user.id, max_requests=5, window_seconds=60)
+    user_id = user["id"] if isinstance(user, dict) else user.id
+    
+    logger.info(f"Requisição de transcrição REST recebida do utilizador {user_id}")
+    
+    is_allowed = await redis_service.check_rate_limit(user_id, max_requests=5, window_seconds=60)
     if not is_allowed:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Limite de transcrições de voz atingido. Aguarde um minuto."
         )
+        
     # Validação simples de tipo de arquivo
     if not audio_file.content_type.startswith("audio/"):
         raise HTTPException(
@@ -196,7 +205,7 @@ async def transcribe_voice(
         
         return {
             "status": "success",
-            "user_id": user.id,
+            "user_id": user_id,
             "text": texto_transcrito
         }
     except Exception as e:
@@ -204,9 +213,11 @@ async def transcribe_voice(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro interno ao transcrever o áudio."
-        )  
+        )
+
+
 @router.get("/sessions")
-async def get_chat_sessions(request: Request, db: Session = Depends(get_db)):
+async def get_chat_sessions(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Busca real no PostgreSQL: Retorna a lista de todas as conversas do utilizador.
     """
@@ -216,9 +227,15 @@ async def get_chat_sessions(request: Request, db: Session = Depends(get_db)):
     
     token = auth_header.split(" ")[1]
     user = verify_ws_token(token)
+    user_id = user["id"] if isinstance(user, dict) else user.id
     
-    # Busca todas as sessões do utilizador, ordenadas pela mais recente
-    sessions = db.query(ChatSession).filter(ChatSession.user_id == user["id"]).order_by(ChatSession.updated_at.desc()).all()
+    # Busca assíncrona com SQLAlchemy 2.0
+    result = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.user_id == user_id)
+        .order_by(ChatSession.updated_at.desc())
+    )
+    sessions = result.scalars().all()
     
     return [
         {
@@ -229,8 +246,9 @@ async def get_chat_sessions(request: Request, db: Session = Depends(get_db)):
         } for s in sessions
     ]
 
+
 @router.get("/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, request: Request, db: Session = Depends(get_db)):
+async def get_session_messages(session_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Busca real no PostgreSQL: Retorna as mensagens de uma conversa específica.
     """
@@ -240,14 +258,25 @@ async def get_session_messages(session_id: str, request: Request, db: Session = 
     
     token = auth_header.split(" ")[1]
     user = verify_ws_token(token)
+    user_id = user["id"] if isinstance(user, dict) else user.id
 
     # 1. Verifica se a sessão existe e se pertence a este utilizador (Segurança)
-    session = db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == user["id"]).first()
+    result_session = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.user_id == user_id)
+    )
+    session = result_session.scalars().first()
+    
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada ou não pertence ao utilizador.")
     
     # 2. Busca todas as mensagens desta sessão, em ordem cronológica
-    messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc()).all()
+    result_messages = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.asc())
+    )
+    messages = result_messages.scalars().all()
     
     return [
         {
@@ -257,8 +286,9 @@ async def get_session_messages(session_id: str, request: Request, db: Session = 
         } for m in messages
     ]
 
+
 @router.delete("/sessions/{session_id}")
-async def delete_chat_session(session_id: str, request: Request, db: Session = Depends(get_db)):
+async def delete_chat_session(session_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Exclui uma sessão de chat e todas as suas mensagens associadas.
     """
@@ -268,12 +298,14 @@ async def delete_chat_session(session_id: str, request: Request, db: Session = D
     
     token = auth_header.split(" ")[1]
     user = verify_ws_token(token)
-    
-    # Tolerância pro Auth payload (às vezes é dit, às vezes objeto Pydantic)
     user_id = user["id"] if isinstance(user, dict) else user.id
 
-    # Busca a sessão e garante que o usuário logado é o dono
-    session = db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == user_id).first()
+    # Busca a sessão e garante que o utilizador logado é o dono
+    result_session = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.id == session_id, ChatSession.user_id == user_id)
+    )
+    session = result_session.scalars().first()
     
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada ou não pertence ao utilizador.")
@@ -281,13 +313,13 @@ async def delete_chat_session(session_id: str, request: Request, db: Session = D
     try:
         # Deleta a sessão_mãe. As mensagens vinculadas serão apagadas sozinhas
         # devido à relação cascade="all, delete-orphan" no model.
-        db.delete(session)
-        db.commit()
+        await db.delete(session) # AWAIT adicionado
+        await db.commit()        # AWAIT adicionado
         
         logger.info(f"Sessão {session_id} excluída pelo utilizador {user_id}.")
         return {"status": "success", "message": "Conversa apagada."}
         
     except Exception as e:
-        db.rollback()
+        await db.rollback()      # AWAIT adicionado
         logger.error(f"Erro ao excluir sessão {session_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro interno ao apagar conversa.")

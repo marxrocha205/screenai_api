@@ -4,9 +4,10 @@ Ponto de entrada principal da API ScreenAI.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.logger import setup_logger
-from app.core.database import SessionLocal, engine, Base
-from app.core.seed import seed_plans
 
+# Importamos o motor async e o fallback síncrono
+from app.core.database import engine, Base, SessionLocalSync
+from app.core.seed import seed_plans
 
 from app.models.user_model import User
 from app.models.subscription_model import Subscription
@@ -31,6 +32,8 @@ origins = [
     "https://frontscreenai-production.up.railway.app",
     "https://appscreenai.com",
     "https://www.appscreenai.com",
+    "https://frontscreenai-copy-production.up.railway.app",
+    "https://www.frontscreenai-copy-production.up.railway.app"
 ]
 
 app.add_middleware(
@@ -45,25 +48,23 @@ app.add_middleware(
 # -------------------------------------------------------------------
 # Inclusão dos Controladores (Rotas e Endpoints)
 # -------------------------------------------------------------------
-# Rotas públicas de autenticação (/auth/register, /auth/login)
 app.include_router(auth_controller.router)
-
-# Rotas privadas da API (/api/users/me, /api/chat/message, etc)
 app.include_router(user_controller.router)
 app.include_router(chat_controller.router)
-
-# Rota do WebSocket (o prefixo já foi definido dentro do websocket_controller.py)
 app.include_router(websocket_controller.router)
-
 app.include_router(admin_controller.router)
 # -------------------------------------------------------------------
 
 @app.on_event("startup")
 async def startup_event():
     logger.info("Iniciando a API ScreenAI...")
-    Base.metadata.create_all(bind=engine)
-    # Executa o Seed dos dados obrigatórios de planos financeiros
-    db = SessionLocal()
+    
+    # Criação de tabelas com SQLAlchemy Async exige este formato:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        
+    # Executa o Seed usando a sessão Síncrona (Fallback) para não quebrar o arquivo seed.py
+    db = SessionLocalSync()
     try:
         seed_plans(db)
         logger.info("Verificação de dados iniciais (Seed) concluída.")
@@ -72,5 +73,5 @@ async def startup_event():
 
 @app.get("/health", tags=["Monitoramento"])
 def health_check():
-    """Rota de verificação de saúde para o Load Balancer (Docker/Railway)."""
+    """Rota de verificação de saúde para o Load Balancer."""
     return {"status": "ok", "message": "API está funcionando."}

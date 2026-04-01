@@ -1,10 +1,12 @@
 """
 Controlador de Autenticação.
 Gerencia as rotas de registro de usuários e login (geração de token).
+Refatorado para operações assíncronas não-bloqueantes (SQLAlchemy 2.0).
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.logger import setup_logger
@@ -18,14 +20,16 @@ logger = setup_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Autenticação"])
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register_user(user: UserCreate, db: Session = Depends(get_db)):
+async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     """
-    Registra um novo usuário no sistema.
+    Registra um novo usuário no sistema vinculando-o ao plano padrão (Free).
     """
-    logger.info(f"Tentativa de registro para o email: {user.email}")
+    logger.info(f"Tentativa de registro assíncrono para o email: {user.email}")
     
-    # Verifica se o email já existe
-    db_user = db.query(User).filter(User.email == user.email).first()
+    # 1. Verifica se o email já existe
+    result_user = await db.execute(select(User).where(User.email == user.email))
+    db_user = result_user.scalars().first()
+    
     if db_user:
         logger.warning(f"Falha de registro: Email {user.email} já cadastrado.")
         raise HTTPException(
@@ -34,23 +38,24 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         )
     
     try:
-        # 1. Busca o plano Free no catálogo
-        free_plan = db.query(Plan).filter(Plan.name == "Free").first()
+        # 2. Busca o plano Free no catálogo
+        result_plan = await db.execute(select(Plan).where(Plan.name == "Free"))
+        free_plan = result_plan.scalars().first()
+        
         if not free_plan:
             logger.error("Plano 'Free' não encontrado na base de dados. Falha crítica.")
             raise HTTPException(status_code=500, detail="Erro de configuração do sistema.")
 
-        # 2. Cria o novo utilizador
+        # 3. Cria o novo utilizador
         hashed_pw = get_password_hash(user.password)
         new_user = User(email=user.email, hashed_password=hashed_pw)
         db.add(new_user)
         
         # Dica de Engenharia (flush): 
-        # Envia o utilizador para a base de dados para gerar o ID, mas não consolida (commit) ainda.
-        # Se a criação da assinatura falhar, o utilizador não será guardado (Transação atómica).
-        db.flush() 
+        # await db.flush() envia o SQL para o banco (gerando o ID), mas não finaliza a transação.
+        await db.flush() 
         
-        # 3. Cria a Assinatura vinculando o ID do Utilizador ao ID do Plano
+        # 4. Cria a Assinatura vinculando o ID do Utilizador ao ID do Plano
         new_subscription = Subscription(
             user_id=new_user.id,
             plan_id=free_plan.id,
@@ -59,9 +64,9 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         )
         db.add(new_subscription)
         
-        # 4. Consolida tudo (Utilizador + Assinatura) em segurança
-        db.commit()
-        db.refresh(new_user)
+        # 5. Consolida tudo (Utilizador + Assinatura) de forma atômica
+        await db.commit()
+        await db.refresh(new_user)
         
         logger.info(f"Utilizador {user.email} registado com plano Free (ID: {new_user.id})")
         return new_user
@@ -69,18 +74,26 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
+        # Importante: rollback também é uma operação de I/O de rede com o banco, logo é await
+        await db.rollback()
         logger.error(f"Erro na base de dados ao registar utilizador: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro interno ao registar utilizador.")
 
+
 @router.post("/login", response_model=Token)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(), 
+    db: AsyncSession = Depends(get_db)
+):
     """
     Autentica o utilizador e gera o token JWT enriquecido com dados de negócio (user_id, plan_id).
     """
     logger.info(f"Tentativa de login para o utilizador: {form_data.username}")
     
-    user = db.query(User).filter(User.email == form_data.username).first()
+    # 1. Busca o utilizador no banco
+    result_user = await db.execute(select(User).where(User.email == form_data.username))
+    user = result_user.scalars().first()
+    
     if not user or not verify_password(form_data.password, user.hashed_password):
         logger.warning(f"Falha de login: Credenciais inválidas para {form_data.username}")
         raise HTTPException(
@@ -89,12 +102,12 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Vai buscar os dados da assinatura do utilizador
-    subscription = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+    # 2. Busca a assinatura do utilizador para injetar no Token
+    result_sub = await db.execute(select(Subscription).where(Subscription.user_id == user.id))
+    subscription = result_sub.scalars().first()
     plan_id = subscription.plan_id if subscription else None
     
     # ENRIQUECIMENTO DO PAYLOAD
-    # Em vez de passar apenas o email, passamos um dicionário rico em contexto
     access_token = create_access_token(
         data={
             "sub": user.email,
