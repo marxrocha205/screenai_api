@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.subscription_model import Subscription
 from app.core.logger import setup_logger
-
+from datetime import date
 logger = setup_logger(__name__)
 
 # ---------------------------------------------------------
@@ -17,6 +17,7 @@ logger = setup_logger(__name__)
 COST_TEXT_ONLY = 1
 COST_IMAGE_ANALYSIS = 2
 COST_PREMIUM_VOICE = 4
+FREE_DAILY_TOKENS = 100
 
 class BillingService:
     
@@ -29,6 +30,22 @@ class BillingService:
             total_cost += COST_PREMIUM_VOICE
         return total_cost
 
+
+    async def _ensure_daily_reset(self, db: AsyncSession, subscription: Subscription) -> None:
+        """
+        Avaliação Preguiçosa (Lazy Evaluation):
+        Verifica se o utilizador é Free (plan_id == 1) e se virou o dia.
+        Se sim, recarrega o saldo para 100 e atualiza a data do último reset.
+        """
+        if subscription.plan_id == 1:
+            hoje = date.today()
+            # Se for a primeira vez (None) ou se a data gravada for diferente de hoje
+            if subscription.last_reset_date != hoje:
+                subscription.remaining_credits = FREE_DAILY_TOKENS
+                subscription.last_reset_date = hoje
+                await db.commit()
+                logger.info(f"Recarga Diária (Lazy): Utilizador {subscription.user_id} recebeu {FREE_DAILY_TOKENS} tokens.")
+                
     async def check_balance(self, db: AsyncSession, user_id: int, required_credits: int) -> bool:
         """Verifica se o utilizador tem saldo suficiente ANTES de executar."""
         result = await db.execute(select(Subscription).where(Subscription.user_id == user_id))
