@@ -48,17 +48,23 @@ class GeminiService:
             return "" # Fallback seguro
 
     def _get_model_for_plan(self, plan_id: int) -> str:
+       """
+        Nova Regra de Negócio de Arbitragem de API (Preparado para Multi-LLM):
+        
+        ID 3 (Plus) -> ScreenIA + Gemini + GPT-5 + Claude 
+                       (Atualmente mapeado para o modelo de ponta Pro. Futuramente o Client do Claude entra aqui)
+        ID 2 (Pro)  -> ScreenIA + Gemini + GPT-5 
+                       (Atualmente mapeado para Flash rápido. Futuramente o Client OpenAI entra aqui)
+        ID 1 (Free) -> ScreenIA (Restrito ao modelo Lite/Base para economia de custos)
         """
-        Regra de Negócio de Arbitragem de API:
-        ID 3 (Plus) -> gemini-2.5-pro
-        ID 2 (Pro)  -> gemini-2.5-flash
-        ID 1 (Free) -> gemini-2.5-flash-lite
-        """
-        if plan_id == 3:
-            return "gemini-2.5-pro"
-        elif plan_id == 2:
-            return "gemini-2.5-flash"
-        else:
+       if plan_id == 3:
+            # Representa o pacote Plus (Onde o Claude 3.5 Sonnet ou Gemini 1.5 Pro será chamado)
+            return "gemini-2.5-pro" 
+       elif plan_id == 2:
+            # Representa o pacote Pro (Onde o GPT-4o/GPT-5 será chamado)
+            return "gemini-2.5-flash" 
+       else:
+            # Representa o pacote Free (ScreenIA Base)
             return "gemini-2.5-flash-lite"
 
     async def upload_file_to_gemini(self, file_bytes: bytes, mime_type: str, file_name: str) -> Any:

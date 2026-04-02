@@ -15,8 +15,8 @@ logger = setup_logger(__name__)
 # REGRAS DE NEGÓCIO: TABELA DE CUSTOS
 # ---------------------------------------------------------
 COST_TEXT_ONLY = 1
-COST_IMAGE_ANALYSIS = 5
-COST_PREMIUM_VOICE = 50
+COST_IMAGE_ANALYSIS = 2
+COST_PREMIUM_VOICE = 4
 
 class BillingService:
     
