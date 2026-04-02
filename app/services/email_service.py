@@ -29,15 +29,20 @@ class EmailSerivce:
         msg["Subject"] = subject
         msg["From"] = settings.smtp_username
         msg["To"] = to_email
+        porta = settings.smtp_port
+        usa_ssl_implicito = (porta == 465)
+        usa_starttls = (porta == 587)
         
         try:
             await aiosmtplib.send(
                 msg,
                 hostname=settings.smtp_server,
-                port=settings.smtp_port,
-                start_tls= True,
+                porta=porta,
+                use_tls=usa_ssl_implicito,
+                start_tls=usa_starttls,
                 username= settings.smtp_username,
                 password=settings.smtp_password,
+                timeout=15
                 
             )
             logger.info(f"Email de verificacao enviado com sucesso para {to_email}")
