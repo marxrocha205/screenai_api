@@ -37,7 +37,7 @@ class EmailSerivce:
             await aiosmtplib.send(
                 msg,
                 hostname=settings.smtp_server,
-                porta=porta,
+                port=porta,
                 use_tls=usa_ssl_implicito,
                 start_tls=usa_starttls,
                 username= settings.smtp_username,
