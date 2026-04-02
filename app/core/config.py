@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     gemini_api_key: str
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str
+    
+    smtp_server: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
 
     class Config:
         env_file = ".env"

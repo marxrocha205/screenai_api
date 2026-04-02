@@ -4,10 +4,14 @@ Garante que os dados recebidos pelo Controller estejam corretos antes de process
 """
 from pydantic import BaseModel, EmailStr, Field
 
+class EmailVerificationRequest(BaseModel):
+    email: EmailStr
+
 class UserCreate(BaseModel):
     """Schema para validação de criação de usuário."""
     email: EmailStr
     password: str
+    verification_code: str
 
 class UserResponse(BaseModel):
     """Schema para padronizar o retorno dos dados do usuário (omitindo a senha)."""

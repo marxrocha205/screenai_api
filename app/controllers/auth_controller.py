@@ -19,48 +19,89 @@ from app.core.security import get_password_hash, verify_password, create_access_
 from app.models.user_model import User
 from app.models.plan_model import Plan
 from app.models.subscription_model import Subscription
-from app.schemas.user_schemas import UserCreate, UserResponse, Token, GoogleAuthRequest
+from app.services.redis_service import redis_service
+from app.services.email_service import email_service
+from app.schemas.user_schemas import UserCreate, UserResponse, Token,EmailVerificationRequest, GoogleAuthRequest
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Autenticação"])
+
+@router.post("/request-code", status_code=status.HTTP_200_OK)
+async def request_verification_code(payload: EmailVerificationRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Passo 1: Gera um código de 6 caracteres, salva no Redis com expiração (15 min) e envia por email.
+    """
+    email = payload.email.lower()
+    
+    # 1. Verifica se o email já está registado na base de dados principal
+    result_user = await db.execute(select(User).where(User.email == email))
+    if result_user.scalars().first():
+        # Por segurança, retornamos 200 na mesma para não vazar emails registados para hackers, 
+        # mas não enviamos o código de criação de conta.
+        logger.warning(f"Tentativa de novo registo com email já existente: {email}")
+        return {"message": "Se o email for válido e não estiver registado, receberá um código em instantes."}
+
+    # 2. Gera o código de 6 caracteres (Letras Maiúsculas e Números)
+    alfabeto = string.ascii_uppercase + string.digits
+    codigo = ''.join(secrets.choice(alfabeto) for _ in range(6))
+    
+    # 3. Salva no Redis com Time-To-Live (TTL) de 15 minutos (900 segundos)
+    redis_key = f"verify_code:{email}"
+    await redis_service.redis.setex(redis_key, 900, codigo)
+    
+    # 4. Envia o email
+    await email_service.send_verification_code(to_email=email, code=codigo)
+    
+    return {"message": "Se o email for válido e não estiver registado, receberá um código em instantes."}
+
+
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     """
     Registra um novo usuário no sistema vinculando-o ao plano padrão (Free).
     """
-    logger.info(f"Tentativa de registro assíncrono para o email: {user.email}")
+    email = user.email.lower()
+    codigo = user.verification_code.upper()
     
-    # 1. Verifica se o email já existe
-    result_user = await db.execute(select(User).where(User.email == user.email))
-    db_user = result_user.scalars().first()
+    logger.info(f"Tentativa de registro : {email}")
     
-    if db_user:
-        logger.warning(f"Falha de registro: Email {user.email} já cadastrado.")
+    # 1. VALIDAÇÃO NO REDIS
+    redis_key = f"verify_code:{email}"
+    codigo_guardado = await redis_service.redis.get(redis_key)
+    
+    if not codigo_guardado:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email já registrado no sistema."
+            detail="Código de verificação expirado ou não encontrado. Peça um novo código."
+        )
+        
+    if codigo_guardado.decode('utf-8') != codigo:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Código de verificação incorreto."
         )
     
+    # 2. Verifica novamente se o utilizador já existe no PostgreSQL por segurança de concorrência
+    result_user = await db.execute(select(User).where(User.email == email))
+    if result_user.scalars().first():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email já registado.")
+    
     try:
-        # 2. Busca o plano Free no catálogo
+        # 3. Busca o plano Free no catálogo
         result_plan = await db.execute(select(Plan).where(Plan.name == "Free"))
         free_plan = result_plan.scalars().first()
         
         if not free_plan:
-            logger.error("Plano 'Free' não encontrado na base de dados. Falha crítica.")
             raise HTTPException(status_code=500, detail="Erro de configuração do sistema.")
 
-        # 3. Cria o novo utilizador
+        # 4. Cria o novo utilizador
         hashed_pw = get_password_hash(user.password)
-        new_user = User(email=user.email, hashed_password=hashed_pw)
+        new_user = User(email=email, hashed_password=hashed_pw)
         db.add(new_user)
-        
-        # Dica de Engenharia (flush): 
-        # await db.flush() envia o SQL para o banco (gerando o ID), mas não finaliza a transação.
         await db.flush() 
         
-        # 4. Cria a Assinatura vinculando o ID do Utilizador ao ID do Plano
+        # 5. Cria a Assinatura (Plano Free)
         new_subscription = Subscription(
             user_id=new_user.id,
             plan_id=free_plan.id,
@@ -69,19 +110,21 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
         )
         db.add(new_subscription)
         
-        # 5. Consolida tudo (Utilizador + Assinatura) de forma atômica
+        # 6. Consolida tudo na base de dados
         await db.commit()
         await db.refresh(new_user)
         
-        logger.info(f"Utilizador {user.email} registado com plano Free (ID: {new_user.id})")
+        # 7. SUCESSO! Apaga o código do Redis para evitar reutilização
+        await redis_service.redis.delete(redis_key)
+        
+        logger.info(f"Utilizador {email} registado com sucesso após verificação de email.")
         return new_user
         
     except HTTPException:
         raise
     except Exception as e:
-        # Importante: rollback também é uma operação de I/O de rede com o banco, logo é await
         await db.rollback()
-        logger.error(f"Erro na base de dados ao registar utilizador: {str(e)}")
+        logger.error(f"Erro ao registar utilizador: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro interno ao registar utilizador.")
 
 
