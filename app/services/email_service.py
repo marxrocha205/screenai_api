@@ -1,57 +1,64 @@
-
-
-
+"""
+Serviço de envio de emails assíncrono.
+Configurado especificamente para SMTP Hostinger via porta 587 (STARTTLS).
+"""
 import aiosmtplib
 from email.message import EmailMessage
-from app.core.logger import setup_logger
 from app.core.config import settings
+from app.core.logger import setup_logger
+
 logger = setup_logger(__name__)
 
-class EmailSerivce:
-    async def send_verification_code(self, to_email: str, code: str) -> bool : 
-        
-        
+class EmailService:
+    async def send_verification_code(self, to_email: str, code: str) -> bool:
+        """
+        Envia o código de verificação de 6 dígitos via SMTP Hostinger.
+        """
         subject = "O seu código de verificação - ScreenAI"
         body = f"""
-        Olá,
-               
-        O seu código de verificação chegou: {code}
+Olá,
+
+O seu código de verificação chegou: {code}
+
+Este código expira em 15 minutos. Se não solicitou este registro, ignore este email.
+
+Bem-vindo ao futuro.
+Equipe ScreenAI
+"""
         
-        este código expira em 15 minutos. Se não solicitou este registro, ignore este email
-        
-        Bem vindo ao futuro
-        Equipe ScreenAI
-        """
-        
-        
+        # Modo de Desenvolvimento (Fallback)
+        if not settings.smtp_username or not settings.smtp_password:
+            logger.warning(f"⚠️ MODO DEV: Simulação de envio para {to_email}. Código: {code}")
+            return True
+
         msg = EmailMessage()
         msg.set_content(body)
         msg["Subject"] = subject
-        msg["From"] = settings.smtp_username
+        msg["From"] = f"ScreenAI <{settings.smtp_username}>"
         msg["To"] = to_email
-        porta = settings.smtp_port
-        usa_ssl_implicito = (porta == 465)
+
+        # Configurações para Porta 587 (STARTTLS)
+        # Se você decidir voltar para 465, inverta: use_tls=True, start_tls=False
+        porta = int(settings.smtp_port)
+        usa_tls_direto = (porta == 465)
         usa_starttls = (porta == 587)
-        
+
         try:
             await aiosmtplib.send(
                 msg,
                 hostname=settings.smtp_server,
                 port=porta,
-                use_tls=usa_ssl_implicito,
-                start_tls=usa_starttls,
-                username= settings.smtp_username,
+                username=settings.smtp_username,
                 password=settings.smtp_password,
-                timeout=15
-                
+                use_tls=usa_tls_direto,
+                start_tls=usa_starttls,
+                timeout=30  # Timeout aumentado conforme sugestão da Hostinger
             )
-            logger.info(f"Email de verificacao enviado com sucesso para {to_email}")
+            logger.info(f"✅ Email enviado com sucesso para {to_email} via porta {porta}")
             return True
-        except Exception as e: 
-            logger.error(f"Falha ao enviar email para {to_email}: {str(e)}")
+        except Exception as e:
+            logger.error(f"❌ Erro crítico ao enviar email via Hostinger: {str(e)}")
             return False
-        
-        
-        
-email_service = EmailSerivce()
-    
+
+# Instância Singleton para o projeto
+email_service = EmailService()
