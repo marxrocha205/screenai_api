@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str
     
-    smtp_server: str = "smtp.gmail.com"
+    smtp_server: str = "smtp.hostinger.com"
     smtp_port: int = 587
     smtp_username: str | None = None
     smtp_password: str | None = None
