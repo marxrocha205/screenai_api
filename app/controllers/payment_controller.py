@@ -16,11 +16,20 @@ from app.services.payment_service import payment_service
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/api/payments", tags=["Pagamentos AlphaPay"])
 
-# No seu painel da AlphaPay, você deve cadastrar seus produtos.
-# Substitua as hashes abaixo pelas reais do seu painel!
+# Mapeamento Oficial de Produtos e Ofertas da AlphaPay
 PLAN_MAPPING = {
-    2: {"name": "Plano Pro", "price": 4990, "offer_hash": "hash_oferta_pro", "product_hash": "hash_prod_pro"},
-    3: {"name": "Plano Plus", "price": 9990, "offer_hash": "hash_oferta_plus", "product_hash": "hash_prod_plus"}
+    2: {
+        "name": "Plano Pro", 
+        "price": 4900, 
+        "product_hash": "zzblgbcgva", 
+        "offer_hash": "nfltey3was"
+    },
+    3: {
+        "name": "Plano Plus", 
+        "price": 9700, 
+        "product_hash": "4gptna5td1", 
+        "offer_hash": "wh1uadp6fj"
+    }
 }
 
 class CheckoutRequest(BaseModel):
@@ -43,9 +52,9 @@ async def checkout_pix(request: Request, payload: CheckoutRequest, db: AsyncSess
 
     plan_info = PLAN_MAPPING[payload.plan_id]
     
-    # 1. Monta a URL de Webhook dinâmica (para o AlphaPay nos avisar)
-    # Substitua pelo seu domínio oficial na nuvem!
-    postback_url = ""
+    # 1. URL de Webhook Oficial (Para onde a AlphaPay vai mandar a confirmação)
+    # ATENÇÃO: Se mudar de domínio no futuro, altere esta URL!
+    postback_url = "https://screenaiapi-production.up.railway.app/api/payments/webhook"
 
     # 2. Chama o Gateway
     user_data = {
@@ -57,9 +66,7 @@ async def checkout_pix(request: Request, payload: CheckoutRequest, db: AsyncSess
     
     alpha_res = await payment_service.create_pix_transaction(user_data, plan_info, postback_url)
     
-    # Nota: A resposta da AlphaPay geralmente traz o hash e os dados do PIX
-    # Exemplo: alpha_res["transaction"]["hash"]
-    
+    # Extração segura dos dados do PIX
     tx_hash = alpha_res.get("hash") or alpha_res.get("transaction_hash", "tx_temp")
     pix_qrcode = alpha_res.get("pix_qrcode", "URL_QRCODE")
     pix_code = alpha_res.get("pix_qrcode_text", "CÓDIGO_COPIA_E_COLA")
@@ -106,6 +113,7 @@ async def alphapay_webhook(request: Request, db: AsyncSession = Depends(get_db))
     if not is_really_paid:
         logger.warning(f"Tentativa de fraude no Webhook interceptada para o hash {tx_hash}")
         raise HTTPException(status_code=400, detail="Transação não consta como paga no Gateway.")
+        
     # 2. Marca transação como Paga
     tx.status = "paid"
 
