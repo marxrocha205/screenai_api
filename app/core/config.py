@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     gemini_api_key: str
     redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str
+    resend_api_key: str | None = None
     
     smtp_server: str = "smtp.hostinger.com"
     smtp_port: int = 587
