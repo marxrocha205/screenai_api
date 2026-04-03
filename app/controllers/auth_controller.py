@@ -76,7 +76,7 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
             detail="Código de verificação expirado ou não encontrado. Peça um novo código."
         )
         
-    if codigo_guardado.decode('utf-8') != codigo:
+    if codigo_guardado != codigo:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Código de verificação incorreto."
