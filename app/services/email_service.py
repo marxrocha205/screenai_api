@@ -49,5 +49,34 @@ class EmailService:
         except Exception as e:
             logger.error(f"❌ Falha ao enviar email via API: {str(e)}")
             return False
+        
+        
+    async def send_billing_alert(self, to_email: str, alert_type: str, days: int = 0):
+        """Envia alertas automáticos de vencimento e carência."""
+        if not self.api_key:
+            return True
+
+        subjects = {
+            "expiring_soon": "Sua assinatura ScreenAI vence em 5 dias",
+            "expired": "Assinatura Vencida - Período de Carência",
+            "downgraded": "Sua conta retornou para o Plano Free"
+        }
+
+        html_bodies = {
+            "expiring_soon": f"<p>Olá! Faltam apenas 5 dias para a renovação do seu plano. Garanta seu pagamento para não perder os recursos Premium!</p>",
+            "expired": f"<p>Olá! Não identificamos o pagamento da sua assinatura. Você tem 2 dias de carência para pagar antes de voltar ao plano Free.</p>",
+            "downgraded": f"<p>Olá. Como o pagamento não foi confirmado após a carência, sua conta retornou para o plano Free. Faça o upgrade a qualquer momento!</p>"
+        }
+
+        params = {
+            "from": f"ScreenAI <{settings.smtp_username}>",
+            "to": [to_email],
+            "subject": subjects.get(alert_type, "Aviso da Conta"),
+            "html": html_bodies.get(alert_type, ""),
+        }
+        try:
+            await asyncio.to_thread(resend.Emails.send, params)
+        except Exception as e:
+            logger.error(f"Erro ao enviar email de billing: {e}")        
 
 email_service = EmailService()

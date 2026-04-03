@@ -25,6 +25,9 @@ class Subscription(Base):
     # NOVO: Controle de Recarga Diária (Lazy Evaluation)
     last_reset_date = Column(Date, nullable=True)
     
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_payment_date = Column(DateTime(timezone=True), nullable=True)
+    
     # Datas de controle de ciclo
     current_period_end = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
