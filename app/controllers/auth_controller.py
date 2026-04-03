@@ -32,6 +32,13 @@ async def request_verification_code(payload: EmailVerificationRequest, db: Async
     Passo 1: Gera um código de 6 caracteres, salva no Redis com expiração (15 min) e envia por email.
     """
     email = payload.email.lower()
+    rate_limit_key = f"rate_limit:otp:{email}"
+    is_rate_limited = await redis_service.redis.get(rate_limit_key)
+    if is_rate_limited:
+        raise HTTPException(status_code=429, detail="Aguarde 60 segundos antes de pedir outro código.")
+    
+    # Marca que este email pediu um código (bloqueia por 60 segundos)
+    await redis_service.redis.setex(rate_limit_key, 60, "locked")
     
     # 1. Verifica se o email já está registado na base de dados principal
     result_user = await db.execute(select(User).where(User.email == email))

@@ -45,7 +45,7 @@ async def checkout_pix(request: Request, payload: CheckoutRequest, db: AsyncSess
     
     # 1. Monta a URL de Webhook dinâmica (para o AlphaPay nos avisar)
     # Substitua pelo seu domínio oficial na nuvem!
-    postback_url = "https://sua-api.railway.app/api/payments/webhook"
+    postback_url = ""
 
     # 2. Chama o Gateway
     user_data = {
@@ -59,7 +59,7 @@ async def checkout_pix(request: Request, payload: CheckoutRequest, db: AsyncSess
     
     # Nota: A resposta da AlphaPay geralmente traz o hash e os dados do PIX
     # Exemplo: alpha_res["transaction"]["hash"]
-    # Ajuste as chaves abaixo de acordo com a resposta exata do JSON deles
+    
     tx_hash = alpha_res.get("hash") or alpha_res.get("transaction_hash", "tx_temp")
     pix_qrcode = alpha_res.get("pix_qrcode", "URL_QRCODE")
     pix_code = alpha_res.get("pix_qrcode_text", "CÓDIGO_COPIA_E_COLA")
@@ -101,6 +101,11 @@ async def alphapay_webhook(request: Request, db: AsyncSession = Depends(get_db))
     if not tx or tx.status == "paid":
         return {"status": "ok"} # Já processado
 
+    # 🛑 PROTEÇÃO CONTRA SPOOFING: Verifica na fonte se é verdade
+    is_really_paid = await payment_service.verify_transaction_status(tx_hash)
+    if not is_really_paid:
+        logger.warning(f"Tentativa de fraude no Webhook interceptada para o hash {tx_hash}")
+        raise HTTPException(status_code=400, detail="Transação não consta como paga no Gateway.")
     # 2. Marca transação como Paga
     tx.status = "paid"
 

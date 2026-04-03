@@ -23,7 +23,7 @@ logger = setup_logger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # Token válido por 7 dias
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 2  # Token válido por 7 dias
 
 def get_password_hash(password: str) -> str:
     """Gera um hash seguro a partir de uma senha em texto plano usando bcrypt."""

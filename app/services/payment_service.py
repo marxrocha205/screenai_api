@@ -51,4 +51,15 @@ class PaymentService:
 
             return response.json()
 
+
+    async def verify_transaction_status(self, transaction_hash: str) -> bool:
+        """Consulta a AlphaPay para ter certeza absoluta de que foi pago."""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/transactions/{transaction_hash}?api_token={self.token}"
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("status") == "paid"
+            return False
 payment_service = PaymentService()

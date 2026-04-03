@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.logger import setup_logger
+from fastapi.responses import JSONResponse
+from fastapi import Request
 
 # Importamos o motor async e as configurações de banco
 from app.core.database import engine, Base
@@ -92,3 +94,12 @@ app.include_router(payment_controller.router)  # <-- ROTA ALPHAPAY ADICIONADA
 def health_check():
     """Rota de verificação de saúde para o Load Balancer."""
     return {"status": "ok", "message": "API está funcionando."}
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Erro Crítico não tratado: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Ocorreu um erro interno no servidor. A nossa equipa já foi notificada."},
+    )
